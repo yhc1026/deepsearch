@@ -51,7 +51,12 @@ def internet_search(
         },
     )
 
-    # Tavily 返回 query、results、title、url、content 等结构化字段，后续由子智能体阅读并汇总
+    print(f"\n{'='*60}")
+    print(f"[Tavily Agent] 网络搜索查询:")
+    print(f"  关键词: \033[94m{query}\033[0m")
+    print(f"  主题: {topic} | 最大结果数: {max_results}")
+    print(f"{'='*60}\n")
+
     return tavily_client.search(
         query=query,
         topic=topic,

@@ -137,21 +137,31 @@
 deepsearch-agents/
 ├── app/
 │   ├── agent/
-│   │   ├── subagents/              # 网络搜索、数据库查询、RAGFlow 三个子智能体
-│   │   ├── llm.py                  # OpenAI 兼容模型初始化
+│   │   ├── subagents/              # [已废弃] 旧版字典式子智能体，现由 services/ 替代
+│   │   ├── llm.py                  # 向后兼容 re-export，实际模型在 shared/llm.py
 │   │   ├── main_agent.py           # 主智能体组装与 run_deep_agent 执行入口
-│   │   └── prompts.py              # 读取 app/prompt/prompts.yml
+│   │   └── prompts.py              # 向后兼容 re-export，实际提示词加载在 shared/prompts.py
 │   ├── api/
 │   │   ├── context.py              # ContextVar 保存 thread_id 和 session_dir
 │   │   ├── monitor.py              # 工具调用、助手调用、结果和异常事件推送
 │   │   └── server.py               # FastAPI 任务、上传、文件、下载、WebSocket 接口
+│   ├── services/                   # A2A 子智能体独立服务（各占一个端口）
+│   │   ├── base.py                 # A2AAgentService 基类：封装 FastAPI + Agent 创建与执行
+│   │   ├── network_search_service.py  # Port 8001: Tavily 网络搜索
+│   │   ├── database_query_service.py  # Port 8002: MySQL 数据库查询
+│   │   └── ragflow_service.py         # Port 8003: RAGFlow 知识库检索
+│   ├── shared/                     # 主智能体与子服务共享模块
+│   │   ├── llm.py                  # OpenAI 兼容模型初始化
+│   │   └── prompts.py              # 从 prompts.yml 加载 main_agent 和 sub_agents 配置
 │   ├── prompt/
-│   │   └── prompts.yml             # 主智能体和子智能体提示词配置
+│   │   └── prompts.yml             # 主智能体和子智能体提示词、skills 配置
 │   ├── ragflow/                    # RAGFlow 配置和基础调用示例
-│   ├── tools/                      # Tavily、MySQL、RAGFlow、文件读取、Markdown、PDF 工具
+│   ├── tools/                      # Tavily、MySQL、RAGFlow、文件读取、Markdown、PDF、A2A 工具
+│   │   └── a2a_agent_tools.py      # A2A HTTP 包装工具（主智能体调用子服务的桥梁）
 │   ├── utils/                      # 路径解析、Markdown/PDF 底层转换等普通 Python 工具
 │   ├── output/                     # 运行时生成：每个会话的 Markdown、PDF 等产物
 │   └── updated/                    # 运行时生成：用户上传文件的会话暂存目录
+├── start_services.py               # 一键启动 4 个 Agent 服务（支持 --reload 热重载）
 ├── docker/
 │   ├── docker-compose.yaml         # 本地 MySQL 教学环境
 │   └── mysql/mysql.sql             # 药品、库存、销售记录模拟数据
@@ -238,11 +248,28 @@ RAGFlow 不在本仓库的 Docker Compose 中启动，需要接入你已有的 R
 
 ### 7. 启动后端
 
+项目采用 A2A 多进程架构，需要同时启动主智能体和三个专家子服务。使用一键启动脚本：
+
 ```bash
-uv run uvicorn app.api.server:app --host 0.0.0.0 --port 8000 --reload
+# 生产模式（无热重载）
+uv run python start_services.py
+
+# 开发模式（代码变更自动重启）
+uv run python start_services.py --reload
 ```
 
-后端默认接口：
+启动后 4 个服务分别监听以下端口：
+
+| 端口  | 服务              | 说明                                      |
+| ----- | ----------------- | ----------------------------------------- |
+| 8000  | 主智能体          | Orchestrator + Query Rewriter + WebSocket |
+| 8001  | 网络搜索智能体    | Tavily 互联网搜索 (A2A)                   |
+| 8002  | 数据库查询智能体  | MySQL 结构化数据查询 (A2A)                |
+| 8003  | RAGFlow 智能体    | 私有知识库检索 (A2A)                      |
+
+各 A2A 子服务的 Agent Card 可直接访问 `GET http://localhost:800{1,2,3}/`。
+
+后端主接口（port 8000）：
 
 | 接口                                | 说明                                   |
 | ----------------------------------- | -------------------------------------- |

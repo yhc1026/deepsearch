@@ -1,9 +1,16 @@
 """
-主智能体组装与异步执行模块
+主智能体组装与异步执行模块 (单机多进程版)
 
-负责把模型、主提示词、文件类工具和三个专家子智能体组装成 DeepAgent，
-并提供 run_deep_agent 作为后续 API 层调用的统一入口。运行时还会为每个
-session_id 创建独立工作目录，并把工具调用、子智能体调用和最终结果推送给前端。
+负责把模型、主提示词、文件类工具和 A2A 远程专家工具组装成 DeepAgent。
+主智能体承担三个核心职责：
+1. Query 重写：将用户模糊问题转为自包含的子智能体查询
+2. 路由分发：根据问题类型选择合适的 A2A 专家工具
+3. 结果汇总：整合各专家返回的信息，生成最终交付物
+
+三个专家子智能体已拆分为独立进程（A2A 服务）：
+- port 8001: 网络搜索服务
+- port 8002: 数据库查询服务
+- port 8003: RAGFlow 知识库服务
 """
 
 import asyncio
@@ -15,9 +22,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.agent.llm import model
 from app.agent.prompts import main_agent_content
-from app.agent.subagents.database_query_agent import database_query_agent
-from app.agent.subagents.knowledge_base_agent import knowledge_base_agent
-from app.agent.subagents.network_search_agent import network_search_agent
 from app.api.context import (
     reset_session_context,
     set_session_context,
@@ -25,21 +29,36 @@ from app.api.context import (
 )
 from app.api.monitor import monitor
 
-# 文件类工具由主智能体直接掌握，负责读取上传附件和生成最终交付文档
+# 文件类工具：主智能体直接掌握，负责读取上传附件和生成最终交付文档
 from app.tools.markdown_tools import generate_markdown
 from app.tools.pdf_tools import convert_md_to_pdf
 from app.tools.upload_file_read_tool import read_file_content
 
-# 主智能体是调度中心：
-# 1. tools 只放最终交付相关的文件工具
-# 2. subagents 放网络、数据库、RAGFlow 三类信息获取助手
-# 3. checkpointer 通过 thread_id 保存同一会话中的执行上下文
+# A2A 远程专家工具：替代原来的 DeepAgents 字典式子智能体
+# 每个工具通过 HTTP 调用对应端口的独立 Agent 服务
+from app.tools.a2a_agent_tools import (
+    call_database_query,
+    call_network_search,
+    call_ragflow_query,
+)
+
+# 主智能体: tools 包含 3 个本地文件工具 + 3 个 A2A 远程专家工具
+# skills 从 prompts.yml 的 main_agent.skills_dir 加载自定义技能
+# subagents 参数不再使用，专家能力通过 A2A 工具的 docstring 暴露给模型
+_skills_dir = main_agent_content.get("skills_dir")
 main_agent = create_deep_agent(
     model=model,
     system_prompt=main_agent_content["system_prompt"],
-    tools=[generate_markdown, convert_md_to_pdf, read_file_content],
+    tools=[
+        generate_markdown,
+        convert_md_to_pdf,
+        read_file_content,
+        call_network_search,
+        call_database_query,
+        call_ragflow_query,
+    ],
+    skills=[_skills_dir] if _skills_dir else None,
     checkpointer=InMemorySaver(),
-    subagents=[database_query_agent, network_search_agent, knowledge_base_agent],
 )
 
 # 当前文件位于 app/agent/main_agent.py，parents[1] 即 app 目录
@@ -109,12 +128,13 @@ async def run_deep_agent(task_query, session_id):
     """
 
     try:
-        # astream 会持续产出模型节点、工具节点和子智能体节点的状态片段
+        final_ai_content = ""
+
+        # astream 会持续产出模型节点和工具节点的状态片段
         async for chunk in main_agent.astream(
             {"messages": [{"role": "user", "content": task_query + path_instruction}]},
             config=config,
         ):
-            # chunk 形如 {"model": {"messages": [...]}}，这里主要关心模型最新消息
             for node_name, state in chunk.items():
                 if not state or "messages" not in state:
                     continue
@@ -123,24 +143,47 @@ async def run_deep_agent(task_query, session_id):
                     last_msg = messages[-1]
                     if node_name == "model":
                         if last_msg.tool_calls:
-                            # DeepAgents 调用子智能体时，本质上会产生名为 task 的工具调用
+                            # 模型决定调用工具时，立即推送到前端，让用户看到进度
                             for tool_call in last_msg.tool_calls:
-                                if tool_call["name"] == "task":
-                                    # 子智能体调用单独上报，前端可以展示“正在调用哪个专家助手”
-                                    monitor.report_assistant(
-                                        tool_call["args"]["subagent_type"],
-                                        {
-                                            "description": tool_call["args"][
-                                                "description"
-                                            ]
-                                        },
-                                    )
+                                tool_name = tool_call["name"]
+                                tool_args = tool_call.get("args", {})
+                                tool_query = tool_args.get("query", "")[:100]
+                                print(
+                                    f"[MainAgent] 调用工具: {tool_name}, "
+                                    f"query={tool_query}"
+                                )
+                                monitor.report_tool(
+                                    tool_name=tool_name,
+                                    args=tool_args,
+                                )
                         elif last_msg.content:
-                            # 模型没有继续调用工具时，最新文本内容就是本轮可反馈给前端的结果
+                            # 模型产出了思考或规划文本（非工具调用），也推送给前端
+                            content_preview = last_msg.content[:200]
                             print(
-                                f"主智能体执行结果，最终结果：{last_msg.content[:100]}"
+                                f"[MainAgent] 模型输出: {content_preview}..."
                             )
-                            monitor.report_task_result(last_msg.content)
+                            final_ai_content = last_msg.content
+                            monitor._emit(
+                                "agent_thinking",
+                                f"智能体思考中: {content_preview}",
+                                {"content": last_msg.content},
+                            )
+                    elif node_name == "tools":
+                        # 工具执行完成，告知前端工具已返回结果
+                        if hasattr(last_msg, "name") and hasattr(last_msg, "content"):
+                            result_len = len(str(last_msg.content))
+                            monitor._emit(
+                                "tool_result",
+                                f"工具 {last_msg.name} 执行完成，返回 {result_len} 字符",
+                                {
+                                    "tool_name": last_msg.name,
+                                    "result_length": result_len,
+                                },
+                            )
+
+        # 流式完成后报告最终结果
+        if final_ai_content:
+            monitor.report_task_result(final_ai_content)
 
     except asyncio.CancelledError:
         monitor.report_task_cancelled()
