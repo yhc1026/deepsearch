@@ -53,7 +53,23 @@
       "Bash(\"C:/Program Files/Docker/Docker/resources/bin/docker.exe\" ps)",
       "Bash(where docker *)",
       "Bash(git init *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(grep -E \"\\\\.env$|\\\\.venv/\")",
+      "Bash(git commit *)",
+      "Bash(git remote *)",
+      "Bash(git push *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/agent/main_agent.py', encoding='utf-8'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/agent/main_agent.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main_agent.py: Syntax OK'\\)\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(python -c \"from app.services.network_search_service import app\")",
+      "Bash(python -c \"from app.api.server import app\")",
+      "Bash(uv sync *)",
+      "Bash(uv pip *)",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(taskkill /F /IM uv.exe)",
+      "Bash(uv tree *)",
+      "Bash(git check-ignore *)"
     ]
   }
 }
