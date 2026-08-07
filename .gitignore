@@ -20,7 +20,7 @@ frontend/.vite/
 
 # Vendored third-party source (deployed separately)
 /ragflow/
-
+/docs/
 # Python
 .venv/
 .uv-cache/
