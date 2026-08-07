@@ -5,17 +5,23 @@
 接收自包含的数据查询描述，优先通过 MCP 协议调用标准化数据库工具；
 当 MCP 工具不足以应对复杂查询时，回退到手写 SQL 模式。
 
-MCP Server 通过 stdio 子进程自动启动，无需独立端口。
-MCP 工具在 FastAPI lifespan 中异步加载，利用 uvicorn 已有的事件循环。
+MCP Server 作为独立 HTTP 服务运行（默认 port 8100），Agent 通过后台定时轮询
+自动发现工具变更，实现热插拔。
 
 启动方式: uv run uvicorn app.services.database_query_service:app --port 8002
 """
 
+import asyncio
+import logging
+import os
 import traceback
 from contextlib import asynccontextmanager
 
 from app.services.base import A2AAgentService
 from app.shared.prompts import sub_agents_content
+from app.utils.logger import setup_logging
+
+logger = logging.getLogger(__name__)
 
 db_config = sub_agents_content["db"]
 
@@ -33,55 +39,96 @@ service = A2AAgentService(
     skills_dir=db_config.get("skills_dir"),
 )
 
+# 后台刷新间隔（秒），可通过环境变量调整
+REFRESH_INTERVAL = int(os.getenv("MCP_TOOL_REFRESH_INTERVAL", "30"))
 
-@asynccontextmanager
-async def db_lifespan(app):
-    """FastAPI lifespan：在 uvicorn 事件循环内异步加载 MCP 工具并创建 agent。"""
-    global service
-    mcp_exit_stack = None
 
-    try:
-        from app.mcp.client import load_mcp_tools_async
-
-        mcp_tools, mcp_exit_stack = await load_mcp_tools_async()
-        all_tools = list(mcp_tools) + _fallback_tools
-
-        _mcp_tool_names = "\n".join(
-            f"       - {t.name}: {t.description.split(chr(10))[0][:80]}"
-            for t in mcp_tools
-        )
-        _fallback_tool_names = "\n".join(
-            f"       - {t.name}: {t.description.split(chr(10))[0][:80]}"
-            for t in _fallback_tools
-        )
-        _mcp_instruction = f"""
+def _build_tool_instruction(mcp_tools: list, fallback_tools: list) -> str:
+    """构建注入 system_prompt 的工具使用说明"""
+    mcp_lines = "\n".join(
+        f"       - {t.name}: {t.description.split(chr(10))[0][:80]}"
+        for t in mcp_tools
+    )
+    fallback_lines = "\n".join(
+        f"       - {t.name}: {t.description.split(chr(10))[0][:80]}"
+        for t in fallback_tools
+    )
+    return f"""
 【MCP 工具（优先使用，标准化协议）】
-{_mcp_tool_names}
+{mcp_lines}
 
 【兜底工具（MCP 工具无法满足需求时使用，支持精细化手写 SQL）】
-{_fallback_tool_names}
+{fallback_lines}
 
 策略：优先使用 MCP 工具完成常规查询。只有当 MCP 工具确实无法满足复杂需求
 （如特殊的多表嵌套子查询、窗口函数等）时，才回退到兜底工具手写 SQL。
 """
 
+
+async def _refresh_loop():
+    """后台定时刷新 MCP 工具列表，检测到变化时热更新 agent"""
+    global service
+
+    while True:
+        await asyncio.sleep(REFRESH_INTERVAL)
+        try:
+            from app.mcp.client import refresh_mcp_tools_async
+
+            mcp_tools, changed = await refresh_mcp_tools_async()
+            if changed:
+                all_tools = list(mcp_tools) + _fallback_tools
+                instruction = _build_tool_instruction(mcp_tools, _fallback_tools)
+                service.recreate_agent(
+                    tools=all_tools,
+                    system_prompt=db_config["system_prompt"] + "\n" + instruction,
+                )
+                logger.info(f"工具列表已热更新: {[t.name for t in mcp_tools]}")
+        except Exception:
+            logger.error(f"后台刷新异常:\n{traceback.format_exc()}")
+
+
+@asynccontextmanager
+async def db_lifespan(app):
+    """FastAPI lifespan：首次加载 MCP 工具，启动后台刷新任务。"""
+    global service
+
+    setup_logging()
+
+    # 首次加载 MCP 工具
+    try:
+        from app.mcp.client import get_mcp_tools
+
+        mcp_tools = await get_mcp_tools(force_refresh=True)
+        all_tools = list(mcp_tools) + _fallback_tools
+
+        instruction = _build_tool_instruction(mcp_tools, _fallback_tools)
         service.tools = all_tools
-        service.system_prompt = db_config["system_prompt"] + "\n" + _mcp_instruction
+        service.system_prompt = db_config["system_prompt"] + "\n" + instruction
         service.create_agent()
-        print(
-            f"[MySQL Agent] MCP 工具加载成功: {[t.name for t in mcp_tools]}"
-        )
+        logger.info(f"MCP 工具首次加载成功: {[t.name for t in mcp_tools]}")
     except Exception:
         mcp_load_error = traceback.format_exc()
         service.create_agent()
-        print(
-            f"[MySQL Agent] MCP 加载失败，使用直连工具兜底:\n{mcp_load_error}"
-        )
+        logger.error(f"MCP 首次加载失败，使用直连工具兜底:\n{mcp_load_error}")
+
+    # 启动后台刷新任务
+    refresh_task = asyncio.create_task(_refresh_loop())
 
     yield
 
-    if mcp_exit_stack:
-        await mcp_exit_stack.aclose()
+    # 关闭后台任务和 MCP 缓存连接
+    refresh_task.cancel()
+    try:
+        await refresh_task
+    except asyncio.CancelledError:
+        pass
+
+    try:
+        from app.mcp.client import close_mcp_cache
+
+        await close_mcp_cache()
+    except Exception:
+        pass
 
 
 app = service.build_app(lifespan=db_lifespan)

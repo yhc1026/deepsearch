@@ -6,6 +6,7 @@ list_sql_tables 用于发现真实表名，get_table_data 用于预览字段和�
 execute_sql_query 用于在确认结构后执行自定义查询。
 """
 
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -13,6 +14,8 @@ from langchain_core.tools import tool
 from mysql.connector import Error, connect
 
 from app.api.monitor import monitor
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -64,7 +67,7 @@ def list_sql_tables() -> str:
 
     # 埋点：工具一被调用，前端可以展示当前正在查询数据库表名
     monitor.report_tool(tool_name="数据库表名查询工具：list_sql_tables", args={})
-    print(f"[MySQL Agent] 查询数据库表名: \033[94mSHOW TABLES\033[0m")
+    logger.debug(f"\033[94m查询数据库表名: SHOW TABLES\033[0m")
 
     # 加载数据库连接信息
     config = get_db_config()
@@ -121,7 +124,7 @@ def get_table_data(table_name) -> str:
         tool_name="数据库表数据查询工具：get_table_data",
         args={"table_name": table_name},
     )
-    print(f"[MySQL Agent] 预览表数据: \033[94mSELECT * FROM {table_name} LIMIT 100\033[0m")
+    logger.debug(f"\033[94m预览表数据: SELECT * FROM {table_name} LIMIT 100\033[0m")
 
     # 获取数据库参数
     config = get_db_config()
@@ -181,10 +184,7 @@ def execute_sql_query(query) -> str:
                 1,张三,18\n
                 1,张三,18\n
     """
-    print(f"\n{'='*60}")
-    print(f"[MySQL Agent] 执行 SQL 查询:")
-    print(f"  \033[94m{query}\033[0m")
-    print(f"{'='*60}\n")
+    logger.debug(f"\n{'='*60}\n执行 SQL 查询:\n  \033[94m{query}\033[0m\n{'='*60}\n")
     monitor.report_tool(
         tool_name="数据库表数据查询工具：execute_sql_query", args={"query": query}
     )

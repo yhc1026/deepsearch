@@ -69,7 +69,13 @@
       "Bash(taskkill /F /IM python.exe)",
       "Bash(taskkill /F /IM uv.exe)",
       "Bash(uv tree *)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(npx tsc *)",
+      "Bash(ls tests *)",
+      "Bash(ls docker/mysql)",
+      "Bash(wc -l docker/mysql/mysql.sql)",
+      "Bash(cd *)",
+      "Bash(git rm *)"
     ]
   }
 }

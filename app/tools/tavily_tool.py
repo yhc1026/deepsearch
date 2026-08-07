@@ -5,6 +5,7 @@ Tavily 网络搜索工具模块
 工具内部会先通过 monitor 上报调用参数，再请求 Tavily API 返回结构化搜索结果
 """
 
+import logging
 import os
 from typing import Literal
 
@@ -13,6 +14,8 @@ from langchain_core.tools import tool
 from tavily import TavilyClient
 
 from app.api.monitor import monitor
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -51,11 +54,7 @@ def internet_search(
         },
     )
 
-    print(f"\n{'='*60}")
-    print(f"[Tavily Agent] 网络搜索查询:")
-    print(f"  关键词: \033[94m{query}\033[0m")
-    print(f"  主题: {topic} | 最大结果数: {max_results}")
-    print(f"{'='*60}\n")
+    logger.debug(f"\n{'='*60}\n网络搜索查询:\n  关键词: \033[94m{query}\033[0m\n  主题: {topic} | 最大结果数: {max_results}\n{'='*60}\n")
 
     return tavily_client.search(
         query=query,

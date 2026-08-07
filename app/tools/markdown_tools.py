@@ -5,6 +5,7 @@ Markdown 文件生成工具
 filename/path 交给 resolve_path 统一解析，避免模型直接操作真实绝对路径。
 """
 
+import logging
 from pathlib import Path
 
 try:
@@ -16,6 +17,8 @@ from langchain_core.tools import tool
 from app.api.context import get_session_context
 from app.api.monitor import monitor
 from app.utils.path_utils import resolve_path
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -32,14 +35,14 @@ def generate_markdown(
     :param path: 可选保存路径；通常由运行时工作目录指令约束为相对路径
     :return: 文件生成结果说明
     """
-    print(f"[MarkdownTool] 输入保存路径: {path or '当前会话目录'}")
+    logger.debug(f"输入保存路径: {path or '当前会话目录'}")
     monitor.report_tool("Markdown文档生成工具", {"写入的文本内容": content})
     if not filename.endswith(".md"):
         filename += ".md"
 
     # session_dir 由 run_deep_agent 写入 ContextVar，保证文件写入当前会话工作目录
     session_dir = get_session_context()
-    print(f"[MarkdownTool] 当前会话目录: {session_dir}")
+    logger.debug(f"当前会话目录: {session_dir}")
 
     # 先把模型传入的 path/filename 合成一个逻辑路径，再交给 resolve_path 做统一清洗
     if path and path != ".":
@@ -51,22 +54,20 @@ def generate_markdown(
 
     parent_dir = file_path.parent
 
-    print(
-        f"[MarkdownTool] Debug: parent_dir={parent_dir}, filename={filename}, full_path={file_path}"
-    )
+    logger.debug(f"parent_dir={parent_dir}, filename={filename}, full_path={file_path}")
 
     try:
         # 允许模型指定 session_dir 下的子目录；不存在时自动创建
         if not parent_dir.exists():
             parent_dir.mkdir(parents=True, exist_ok=True)
-            print(f"[MarkdownTool] 已创建目录: {parent_dir}")
+            logger.debug(f"已创建目录: {parent_dir}")
 
         file_path.write_text(content, encoding="utf-8")
 
-        print(f"[MarkdownTool] 文件写入完成: {file_path}")
+        logger.info(f"文件写入完成: {file_path}")
         return f"Markdown文件 '{file_path}' 已成功生成并保存。"
     except Exception as e:
-        print(f"[MarkdownTool] 文件写入失败: {e}")
+        logger.error(f"文件写入失败: {e}")
         return f"生成Markdown文件失败: {str(e)}"
 
 

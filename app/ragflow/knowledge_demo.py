@@ -6,11 +6,14 @@ RAGFlow 知识库 Dataset 操作示例
 聊天助手负责对外问答，会话负责承接一次具体提问。这里不会直接注册为 Agent 工具。
 """
 
+import logging
 import os.path
 
 from ragflow_sdk import RAGFlow
 
 from app.ragflow.rag_config import _load_ragflow_env
+
+logger = logging.getLogger(__name__)
 
 # RAGFlow SDK 的入口客户端，后续 Dataset、Chat、Session 操作都从这里发起
 api_key, base_url = _load_ragflow_env()
@@ -33,7 +36,7 @@ def create_knowledge_base(knowledge_base_name, description):
         description=description,
         embedding_model="text-embedding-v3@Tongyi-Qianwen",
     )
-    print(f"创建知识库成功：{ds},{ds.id}")
+    logger.info(f"创建知识库成功：{ds},{ds.id}")
 
 
 if __name__ == "__main__":

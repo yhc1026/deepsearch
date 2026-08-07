@@ -18,6 +18,9 @@ frontend/.vite/
 .npm-cache
 .angular/
 
+# Vendored third-party source (deployed separately)
+/ragflow/
+
 # Python
 .venv/
 .uv-cache/

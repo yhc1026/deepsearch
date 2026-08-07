@@ -8,6 +8,7 @@ system_prompt 即可得到一个独立的 Agent 服务。
 
 import asyncio
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any, Optional
 
 from deepagents import create_deep_agent
@@ -16,6 +17,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
 
 from app.shared.llm import model
+from app.utils.logger import setup_logging
 
 # 略小于客户端 A2A timeout(120s)，避免服务端无限跑、客户端已放弃
 TASK_TIMEOUT_SECONDS = 110
@@ -74,17 +76,34 @@ class A2AAgentService:
         self.system_prompt = system_prompt
         self.skills_dir = skills_dir
         self.agent: Any = None
+        self.checkpointer: Any = None
 
     def create_agent(self) -> None:
-        """创建本服务的 DeepAgent 实例，自带独立的 InMemorySaver"""
+        """创建本服务的 DeepAgent 实例。
+
+        首次调用时创建新的 InMemorySaver；后续调用 recreate_agent() 时复用。
+        """
         skills = [self.skills_dir] if self.skills_dir else None
+        if self.checkpointer is None:
+            self.checkpointer = InMemorySaver()
         self.agent = create_deep_agent(
             model=model,
             system_prompt=self.system_prompt,
             tools=self.tools,
             skills=skills,
-            checkpointer=InMemorySaver(),
+            checkpointer=self.checkpointer,
         )
+
+    def recreate_agent(self, tools: list | None = None, system_prompt: str | None = None) -> None:
+        """用新的 tools / system_prompt 重建 agent，复用已有 checkpointer。
+
+        复用 checkpointer 保证重建前的对话记忆不会丢失。
+        """
+        if tools is not None:
+            self.tools = tools
+        if system_prompt is not None:
+            self.system_prompt = system_prompt
+        self.create_agent()
 
     def _build_capabilities(self) -> list[dict]:
         """从 tools 列表提取能力描述"""
@@ -101,6 +120,15 @@ class A2AAgentService:
 
         lifespan 用于异步初始化（如 MCP 工具加载），在 uvicorn 事件循环中执行。
         """
+        if lifespan is None:
+
+            @asynccontextmanager
+            async def _default_lifespan(_app: FastAPI):
+                setup_logging()
+                yield
+
+            lifespan = _default_lifespan
+
         app = FastAPI(title=self.name, lifespan=lifespan)
 
         @app.get("/")

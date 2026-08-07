@@ -1,5 +1,5 @@
 import "antd/dist/reset.css";
-import { App as AntApp, ConfigProvider, theme } from "antd";
+import { App as AntApp, ConfigProvider } from "antd";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
@@ -9,32 +9,35 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ConfigProvider
       theme={{
-        algorithm: theme.darkAlgorithm,
         token: {
-          colorPrimary: "#20d6ff",
-          colorSuccess: "#5dff9f",
-          colorWarning: "#ffc857",
-          colorError: "#ff5c7a",
-          colorInfo: "#7c8cff",
-          colorBgBase: "#05070b",
-          colorBgContainer: "rgba(12, 18, 28, 0.86)",
-          colorBorder: "rgba(113, 247, 255, 0.18)",
+          colorPrimary: "#3b82f6",
+          colorSuccess: "#10b981",
+          colorWarning: "#f59e0b",
+          colorError: "#ef4444",
+          colorInfo: "#3b82f6",
+          colorBgBase: "#ffffff",
+          colorBgContainer: "#ffffff",
+          colorBorder: "#e2e8f0",
+          colorText: "#1e293b",
+          colorTextSecondary: "#64748b",
           borderRadius: 8,
           fontFamily:
-            "'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif",
+            "'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif",
           fontFamilyCode:
-            "'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace"
+            "'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
         },
         components: {
           Button: {
-            controlHeightLG: 46,
-            primaryShadow: "0 0 24px rgba(32, 214, 255, 0.26)"
+            controlHeightLG: 44,
+            borderRadius: 8,
+            primaryShadow: "0 1px 3px rgba(59, 130, 246, 0.12)",
           },
           Input: {
-            activeBorderColor: "#20d6ff",
-            hoverBorderColor: "#5dff9f"
-          }
-        }
+            activeBorderColor: "#3b82f6",
+            hoverBorderColor: "#93c5fd",
+            borderRadius: 8,
+          },
+        },
       }}
     >
       <AntApp>

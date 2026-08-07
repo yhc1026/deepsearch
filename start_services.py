@@ -16,11 +16,17 @@ DeepSearch Agents 一键启动脚本 (单机多进程版)
 关闭方式: Ctrl+C (所有子进程自动终止)
 """
 
+import logging
 import shutil
 import subprocess
 import sys
 import time
 from typing import List, Tuple
+
+from app.utils.logger import setup_logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 # 启动前检查 uv 是否可用
 if shutil.which("uv") is None:
@@ -32,9 +38,11 @@ SERVICES: List[Tuple[str, str, int]] = [
     ("网络搜索智能体",    "app.services.network_search_service:app",  8001),
     ("数据库查询智能体",  "app.services.database_query_service:app",  8002),
     ("RAGFlow智能体",     "app.services.ragflow_service:app",         8003),
+    ("MySQL MCP Server",  "app.mcp.mysql_mcp_server:http_app",        8100),
 ]
 
 processes: List[Tuple[str, subprocess.Popen]] = []
+exited: set = set()  # 已退出并打印过的进程，避免每 2 秒重复刷屏
 
 
 def start_service(name: str, app_path: str, port: int, reload: bool = False) -> subprocess.Popen:
@@ -57,25 +65,25 @@ def start_service(name: str, app_path: str, port: int, reload: bool = False) -> 
     )
     processes.append((name, proc))
     reload_tag = " [reload]" if reload else ""
-    print(f"  [{name}]{reload_tag} 启动中... http://localhost:{port}  (pid={proc.pid})")
+    logger.info(f"[{name}]{reload_tag} 启动中... http://localhost:{port}  (pid={proc.pid})")
     return proc
 
 
 def shutdown() -> None:
     """优雅关闭所有子进程"""
-    print("\n正在关闭所有服务...")
+    logger.info("正在关闭所有服务...")
     for name, proc in reversed(processes):
         if proc.poll() is None:
-            print(f"  停止 [{name}] pid={proc.pid}")
+            logger.info(f"停止 [{name}] pid={proc.pid}")
             proc.terminate()
     # 等待子进程结束
     for name, proc in processes:
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            print(f"  强制终止 [{name}]")
+            logger.warning(f"强制终止 [{name}]")
             proc.kill()
-    print("所有服务已关闭。")
+    logger.info("所有服务已关闭。")
 
 
 if __name__ == "__main__":
@@ -100,9 +108,11 @@ if __name__ == "__main__":
     print(f"    {'网络搜索智能体 A2A':<30} http://localhost:8001")
     print(f"    {'数据库查询智能体 A2A':<30} http://localhost:8002")
     print(f"    {'RAGFlow智能体 A2A':<30} http://localhost:8003")
+    print(f"    {'MySQL MCP Server':<30} http://localhost:8100")
     print()
     print("  前端连接: http://localhost:8000")
     print("  Agent Cards: GET http://localhost:800{1,2,3}/")
+    print("  MCP Status:  POST http://localhost:8100/mcp")
     if reload_mode:
         print()
         print("  [reload] 源码变更时各服务自动重启")
@@ -116,8 +126,9 @@ if __name__ == "__main__":
             time.sleep(2)
             # 检查是否有子进程意外退出
             for name, proc in processes:
-                if proc.poll() is not None:
-                    print(f"  ! [{name}] 意外退出 (exitcode={proc.returncode})")
+                if proc.poll() is not None and name not in exited:
+                    exited.add(name)
+                    logger.warning(f"[{name}] 意外退出 (exitcode={proc.returncode}, pid={proc.pid})")
     except KeyboardInterrupt:
         pass
     finally:

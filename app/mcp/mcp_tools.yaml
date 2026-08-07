@@ -1,0 +1,37 @@
+# MySQL MCP Server 工具配置文件
+# 修改此文件后重启 MCP Server (port 8100) 即可增减工具，无需修改代码。
+# Agent 侧会在 30 秒内自动发现工具变化。
+
+tools:
+  - name: mysql_list_tables
+    description: >
+      查询当前数据库中所有可用的表名。
+      返回值格式: "可用的表有：表1, 表2, 表3..."。
+      这是所有数据库查询的第一步，必须先用此工具确认真实表名。
+    handler: list_tables
+    params: []
+
+  - name: mysql_get_schema
+    description: >
+      查询指定表的前 100 行数据，用于了解表结构和字段格式。
+      调用此工具前应先用 mysql_list_tables 确认表名。
+      返回值: CSV 格式，第一行是列名，之后是数据行。
+    handler: get_schema
+    params:
+      - name: table_name
+        type: string
+        description: 要预览的表名
+        required: true
+
+  - name: mysql_execute
+    description: >
+      执行一条自定义 SQL 查询（SELECT / SHOW 等只读语句）。
+      适用于多表关联、筛选、聚合、排序等复杂查询。
+      调用前请先通过 mysql_list_tables 和 mysql_get_schema 确认表名和字段名。
+      返回值: CSV 格式，第一行是列名，之后是数据行。
+    handler: execute
+    params:
+      - name: sql
+        type: string
+        description: 要执行的 SQL 查询语句
+        required: true

@@ -6,14 +6,10 @@ WebSocket 长连接。HTTP 接口只做轻量调度，真正的 DeepAgents 执�
 任务中；执行进度、工具调用和最终结果由 monitor 按 thread_id 推送给前端。
 """
 
-import sys
-
-# Windows 下默认 GBK 无法编码 emoji 等 Unicode 字符，强制改为 utf-8
-sys.stdout.reconfigure(encoding="utf-8")
-sys.stderr.reconfigure(encoding="utf-8")
-
 import asyncio
+import logging
 import shutil
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -35,6 +31,9 @@ from pydantic import BaseModel
 
 from app.agent.main_agent import run_deep_agent
 from app.api.monitor import manager
+from app.utils.logger import setup_logging
+
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -44,9 +43,10 @@ async def lifespan(_app: FastAPI):
     启动时绑定当前事件循环到 WebSocket 管理器，确保后台 Agent 任务可以把
     monitor 事件投递回 FastAPI 所在的 loop。
     """
+    setup_logging()
     loop = asyncio.get_running_loop()
     manager.set_loop(loop)
-    print(f"[Server] WebSocket Manager bound to loop: {id(loop)}")
+    logger.info(f"WebSocket Manager bound to loop: {id(loop)}")
     yield
 
 
@@ -219,7 +219,7 @@ async def list_files(path: str):
     Args:
         path (str): 目标目录的绝对路径 (必须在 output 目录下)。
     """
-    print(f"[DEBUG] 请求文件列表: {path}")
+    logger.debug(f"请求文件列表: {path}")
 
     try:
         # 和下载接口保持同一条安全边界：前端只能查看 output 目录内部内容
@@ -227,11 +227,11 @@ async def list_files(path: str):
         output_abs = output_dir.resolve()
 
         if not abs_path.is_relative_to(output_abs):
-            print(f"[ERROR] 拒绝访问: {abs_path} 不在 {output_abs} 目录下")
+            logger.error(f"拒绝访问: {abs_path} 不在 {output_abs} 目录下")
             return {"error": "拒绝访问: 只能访问输出目录下的文件"}
 
     except Exception as e:
-        print(f"[ERROR] 路径解析失败: {e}")
+        logger.error(f"路径解析失败: {e}")
         return {"error": f"路径无效: {e}"}
 
     if not abs_path.exists():
@@ -254,12 +254,12 @@ async def list_files(path: str):
                 )
 
     except Exception as e:
-        print(f"[ERROR] 遍历文件失败: {e}")
+        logger.error(f"遍历文件失败: {e}")
         return {"error": str(e)}
 
     # 最新生成的文件排在前面，方便用户优先看到本次任务产物
     files.sort(key=lambda x: x.get("mtime", 0), reverse=True)
-    print(f"[DEBUG] 找到 {len(files)} 个文件")
+    logger.debug(f"找到 {len(files)} 个文件")
     return {"files": files}
 
 
@@ -272,7 +272,7 @@ async def websocket_endpoint(websocket: WebSocket, thread_id: str):
     发送事件时只需要按 thread_id 查找连接，就能把进度推给对应页面。循环中的
     receive_text 用于接收前端心跳，避免连接空闲断开。
     """
-    print(f"会话向我们发起了请求，要求建立连接：{thread_id} 对应：{websocket}")
+    logger.info(f"WebSocket 连接请求: {thread_id}")
 
     # 连接建立后立即按 thread_id 注册，monitor 后续才能把事件定向推给当前页面
     await manager.connect(websocket, thread_id)
@@ -288,10 +288,10 @@ async def websocket_endpoint(websocket: WebSocket, thread_id: str):
     except WebSocketDisconnect:
         # 只移除当前 WebSocket 实例，避免旧连接断开时误删同 thread_id 的新连接
         manager.disconnect(websocket, thread_id)
-        print(f"[WebSocket] 客户端已断开: {thread_id}")
+        logger.info(f"客户端已断开: {thread_id}")
 
     except Exception as e:
-        print(f"[WebSocket] 连接异常: {e}")
+        logger.error(f"连接异常: {e}")
         manager.disconnect(websocket, thread_id)
 
 
