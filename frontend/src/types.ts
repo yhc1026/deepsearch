@@ -59,3 +59,34 @@ export interface UploadedItem {
   size: number;
   raw: File;
 }
+
+export interface SessionSummary {
+  id: number;
+  thread_id: string;
+  title: string;
+  status: string;
+  turn_count: number;
+  updated_at: string;
+}
+
+export interface ConversationTurn {
+  turn_index: number;
+  user_query: string;
+  assistant_result: string;
+  files: OutputFile[];
+  created_at: string;
+}
+
+export interface SessionsResponse {
+  sessions: SessionSummary[];
+}
+
+export interface ConversationsResponse {
+  thread_id: string;
+  turns: ConversationTurn[];
+}
+
+export interface DeleteSessionResponse {
+  status: string;
+  thread_id: string;
+}

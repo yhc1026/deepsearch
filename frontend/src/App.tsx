@@ -1,5 +1,6 @@
-import { Alert, App as AntApp, Button, Tooltip } from "antd";
-import { useEffect, useRef, useState } from "react";
+import { Alert, App as AntApp, Button, Popconfirm, Tooltip } from "antd";
+import { DeleteOutlined } from "@ant-design/icons";
+import { useEffect, useState } from "react";
 import { ChatComposer } from "./components/ChatComposer";
 import { ConversationThread } from "./components/ConversationThread";
 import type { ChatTurn } from "./components/ConversationThread";
@@ -43,7 +44,6 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [stagedItems, setStagedItems] = useState<UploadedItem[]>([]);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
-  const streamRef = useRef<HTMLElement | null>(null);
   const session = useDeepAgentSession();
 
   useEffect(() => {
@@ -53,31 +53,22 @@ export default function App() {
       }
 
       const latestTurn = previous[previous.length - 1];
+      // 没有活跃任务也没有新结果时，保留已加载的历史轮次不动
+      if (!latestTurn.isRunning && !session.isRunning && !session.result) {
+        return previous;
+      }
+
       const nextLatestTurn = {
         ...latestTurn,
         events: session.events,
-        files: session.files,
+        files: session.files.length > 0 ? session.files : latestTurn.files,
         isRunning: session.isRunning,
-        result: session.result
+        result: session.result || latestTurn.result,
       };
 
       return [...previous.slice(0, -1), nextLatestTurn];
     });
   }, [session.events, session.files, session.isRunning, session.result]);
-
-  useEffect(() => {
-    const streamNode = streamRef.current;
-    if (!streamNode) {
-      return;
-    }
-
-    window.requestAnimationFrame(() => {
-      streamNode.scrollTo({
-        top: streamNode.scrollHeight,
-        behavior: "smooth"
-      });
-    });
-  }, [turns]);
 
   async function handleSubmit() {
     const cleanQuery = query.trim();
@@ -133,6 +124,34 @@ export default function App() {
     setTurns([]);
     setQuery("");
     setStagedItems([]);
+    session.loadSessionsList();
+  }
+
+  async function handleLoadSession(threadId: string) {
+    try {
+      const turns = await session.loadSession(threadId);
+      setTurns(turns);
+      setQuery("");
+      setStagedItems([]);
+    } catch {
+      message.error("加载历史会话失败");
+    }
+  }
+
+  async function handleDeleteSession(threadId: string) {
+    try {
+      await session.removeSession(threadId);
+      // 如果删除的是当前活跃会话，清空界面
+      if (threadId === session.threadId) {
+        session.resetSession();
+        setTurns([]);
+        setQuery("");
+        setStagedItems([]);
+      }
+      message.success("已删除会话");
+    } catch {
+      message.error("删除会话失败");
+    }
   }
 
   const dotColor = wsDotColor(session.connectionState);
@@ -148,6 +167,56 @@ export default function App() {
         <Button className="new-chat-button" block onClick={handleNewSession}>
           新建会话
         </Button>
+
+        <div className="sidebar-section">
+          <div className="sidebar-section-header">历史会话</div>
+          <div className="session-list">
+            {session.sessions.length === 0 ? (
+              <div className="session-list-empty">暂无历史会话</div>
+            ) : (
+              session.sessions.map((s) => {
+                const isActive = s.thread_id === session.threadId;
+                return (
+                  <div
+                    className={`session-item${isActive ? " session-item--active" : ""}`}
+                    key={s.thread_id}
+                    onClick={() => {
+                      if (!isActive) {
+                        handleLoadSession(s.thread_id);
+                      }
+                    }}
+                  >
+                    <div className="session-item-title">{s.title}</div>
+                    <div className="session-item-meta">
+                      <span>{s.turn_count} 轮</span>
+                      <span>{s.updated_at?.slice(0, 10)}</span>
+                    </div>
+                    <Popconfirm
+                      cancelText="取消"
+                      okText="删除"
+                      placement="right"
+                      title="确认删除该会话？"
+                      onConfirm={(e) => {
+                        e?.stopPropagation();
+                        handleDeleteSession(s.thread_id);
+                      }}
+                      onCancel={(e) => e?.stopPropagation()}
+                    >
+                      <Button
+                        className="session-item-delete"
+                        danger
+                        icon={<DeleteOutlined />}
+                        size="small"
+                        type="text"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </Popconfirm>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
       </aside>
 
       <main className="chat-main">
@@ -168,7 +237,7 @@ export default function App() {
           />
         ) : null}
 
-        <section className="chat-stream-panel" ref={streamRef}>
+        <section className="chat-stream-panel">
           <ConversationThread
             onUseExample={setQuery}
             turns={turns}

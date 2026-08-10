@@ -1,5 +1,13 @@
 import { API_BASE_URL } from "./config";
-import type { CancelTaskResponse, FileListResponse, TaskResponse, UploadResponse } from "../types";
+import type {
+  CancelTaskResponse,
+  ConversationsResponse,
+  DeleteSessionResponse,
+  FileListResponse,
+  SessionsResponse,
+  TaskResponse,
+  UploadResponse,
+} from "../types";
 
 function apiUrl(path: string): string {
   return `${API_BASE_URL}${path}`;
@@ -66,4 +74,25 @@ export function getDownloadUrl(path: string): string {
   const url = new URL(apiUrl("/api/download"));
   url.searchParams.set("path", path);
   return url.toString();
+}
+
+export async function listSessions(): Promise<SessionsResponse> {
+  return requestJson<SessionsResponse>(apiUrl("/api/sessions"));
+}
+
+export async function getSessionConversations(
+  threadId: string
+): Promise<ConversationsResponse> {
+  return requestJson<ConversationsResponse>(
+    apiUrl(`/api/sessions/${encodeURIComponent(threadId)}/conversations`)
+  );
+}
+
+export async function deleteSession(
+  threadId: string
+): Promise<DeleteSessionResponse> {
+  return requestJson<DeleteSessionResponse>(
+    apiUrl(`/api/sessions/${encodeURIComponent(threadId)}`),
+    { method: "DELETE" }
+  );
 }

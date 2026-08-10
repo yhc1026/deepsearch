@@ -86,8 +86,9 @@ class ToolMonitor:
             except Exception:
                 pass
 
-        # 控制台保底输出，便于无前端场景下观察执行过程
-        logger.info(f"[{event_type}] {message}")
+        # 控制台保底输出（高频流式事件不打印，避免刷屏）
+        if event_type not in ("llm_stream", "llm_stream_done"):
+            logger.info(f"[{event_type}] {message}")
 
     def _send_to_websocket(
         self,
@@ -143,6 +144,14 @@ class ToolMonitor:
     def report_task_cancelled(self) -> None:
         """报告任务已被用户取消"""
         self._emit("task_cancelled", "任务已取消")
+
+    def stream_chunk(self, chunk: str) -> None:
+        """推送 LLM 流式输出的单个文本块到前端。"""
+        self._emit("llm_stream", "", {"chunk": chunk})
+
+    def stream_done(self) -> None:
+        """通知前端当前流式输出阶段已结束。"""
+        self._emit("llm_stream_done", "", {})
 
     def report_session_dir(self, path: str) -> None:
         """报告当前任务工作目录"""

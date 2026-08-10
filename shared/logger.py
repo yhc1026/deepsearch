@@ -1,3 +1,8 @@
+# 必须在所有 import 之前屏蔽第三方库警告（警告在 import 时触发）
+import warnings
+warnings.filterwarnings("ignore", module="langchain")
+warnings.filterwarnings("ignore", module="langgraph")
+
 import logging
 import os
 import sys
@@ -36,3 +41,19 @@ def setup_logging(level: int | str | None = None) -> None:
     # 避免重复添加 handler（start_services.py 多进程场景）
     if not root.handlers:
         root.addHandler(handler)
+
+    # 关闭第三方库的 INFO 日志，报错时才输出
+    for noisy in (
+        "uvicorn",
+        "uvicorn.access",
+        "uvicorn.error",
+        "fastapi",
+        "httpx",
+        "httpx2",
+        "httpcore",
+        "openai",
+        "mcp",
+        "mysql.connector",
+    ):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+

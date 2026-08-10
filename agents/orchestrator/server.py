@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from agents.orchestrator.main_agent import run_deep_agent
+from agents.orchestrator.session_db import delete_session, get_conversations, list_sessions
 from shared.monitor import manager
 from shared.logger import setup_logging
 
@@ -273,6 +274,48 @@ async def list_files(path: str):
     files.sort(key=_sort_by_mtime, reverse=True)
     logger.debug(f"找到 {len(files)} 个文件")
     return {"files": files}
+
+
+@app.get("/api/sessions")
+async def get_sessions():
+    """返回所有历史会话列表，按更新时间倒序。"""
+    try:
+        sessions = list_sessions()
+        return {"sessions": sessions}
+    except Exception as e:
+        logger.error(f"获取会话列表失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/sessions/{thread_id}/conversations")
+async def get_session_conversations(thread_id: str):
+    """返回指定会话的所有对话轮次。"""
+    try:
+        turns = get_conversations(thread_id)
+        return {"thread_id": thread_id, "turns": turns}
+    except Exception as e:
+        logger.error(f"获取对话记录失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/sessions/{thread_id}")
+async def remove_session(thread_id: str):
+    """删除指定会话及其所有对话记录。"""
+    try:
+        ok = delete_session(thread_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        # 同步取消正在运行的后台任务
+        task = active_tasks.get(thread_id)
+        if task and not task.done():
+            task.cancel()
+        active_tasks.pop(thread_id, None)
+        return {"status": "deleted", "thread_id": thread_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除会话失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.websocket("/ws/{thread_id}")

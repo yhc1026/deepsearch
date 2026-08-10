@@ -38,6 +38,13 @@ from agents.orchestrator.context import (
     set_session_context,
     set_thread_context,
 )
+from agents.orchestrator.session_db import (
+    finish_turn,
+    get_context_summary,
+    get_conversations,
+    save_conversation,
+    upsert_session,
+)
 from shared.monitor import monitor
 
 project_root_path = Path(__file__).parents[2].resolve()
@@ -155,7 +162,38 @@ async def run_deep_agent(task_query: str, session_id: str):
         f"{uploaded_context}"
     )
 
-    full_query = task_query + date_context
+    # ---- 加载历史对话上下文（全局摘要 + 最近3轮完整 + 旧轮次用摘要） ----
+    history_context = ""
+    try:
+        history_turns = get_conversations(session_id)
+        if history_turns:
+            ctx_summary = get_context_summary(session_id)
+            lines = ["\n[历史对话]"]
+
+            if ctx_summary:
+                lines.append(f"[对话概要] {ctx_summary}")
+
+            recent_count = 3
+            for i, turn in enumerate(history_turns):
+                is_recent = i >= len(history_turns) - recent_count
+                lines.append(f"用户: {turn['user_query']}")
+                if is_recent:
+                    if turn.get("assistant_result"):
+                        lines.append(f"助手: {turn['assistant_result']}")
+                else:
+                    content = turn.get("summary") or turn.get("assistant_result", "")
+                    if content:
+                        lines.append(f"助手: {content[:300]}")
+
+            history_context = "\n" + "\n".join(lines)
+            if len(history_context) > 6000:
+                history_context = history_context[:6000] + "\n...(历史对话已截断)"
+    except Exception:
+        logger.warning("加载历史上下文失败", exc_info=True)
+
+    full_query = task_query + date_context + history_context
+    last_result: str = ""
+    session_files: list[dict] = []
 
     try:
         # ================================================================
@@ -186,9 +224,9 @@ async def run_deep_agent(task_query: str, session_id: str):
 
         # 空计划 = LLM 判定不需要工具，直接口头回复
         if not plan.steps:
-            final_answer = await _chat_reply(task_query)
-            if final_answer:
-                monitor.report_task_result(final_answer)
+            last_result = await _chat_reply(task_query)
+            if last_result:
+                monitor.report_task_result(last_result)
             return
 
         # ================================================================
@@ -202,18 +240,40 @@ async def run_deep_agent(task_query: str, session_id: str):
         # Phase 3: 汇总
         # ================================================================
         print(f"\033[36m▶ Phase 3/3: 汇总 — 整合各子 Agent 结果，生成最终答案\033[0m")
-        final_answer = await _synthesize(task_query, plan, results)
+        last_result = await _synthesize(task_query, plan, results)
 
-        if final_answer:
-            monitor.report_task_result(final_answer)
+        if last_result:
+            monitor.report_task_result(last_result)
 
     except asyncio.CancelledError:
+        last_result = "任务已取消"
         monitor.report_task_cancelled()
         raise
     except Exception as e:
+        last_result = f"执行异常：{e}"
         monitor._emit("error", f"主智能体执行异常：{str(e)}")
         raise
     finally:
+        # ---- 收集会话产出文件 ----
+        try:
+            if session_dir.exists():
+                session_files = [
+                    {"name": f.name, "path": str(f), "size": f.stat().st_size}
+                    for f in session_dir.iterdir()
+                    if f.is_file()
+                ]
+        except Exception:
+            pass
+
+        # ---- 持久化对话记录 ----
+        if last_result:
+            try:
+                upsert_session(session_id, task_query[:50])
+                save_conversation(session_id, task_query, last_result, session_files)
+                finish_turn(session_id)
+            except Exception:
+                logger.warning("保存对话记录失败", exc_info=True)
+
         reset_session_context(session_dir_token, session_id_token)
 
 
@@ -229,12 +289,17 @@ async def _chat_reply(task_query: str) -> str:
         "市场研究、数据库查询、文档生成等任务。对于简单的问候或闲聊，"
         "请友好简洁地回复，并简要介绍你能做什么。"
     )
-    response = await model.ainvoke([
+    full: list[str] = []
+    async for chunk in model.astream([
         SystemMessage(content=system_prompt),
         HumanMessage(content=task_query),
-    ])
-    if response.content:
-        return str(response.content)
+    ]):
+        if chunk.content:
+            full.append(str(chunk.content))
+            monitor.stream_chunk(str(chunk.content))
+    monitor.stream_done()
+    if full:
+        return "".join(full)
     else:
         return "你好，有什么可以帮你的？"
 
@@ -292,13 +357,18 @@ async def _synthesize(task_query: str, plan: Plan, results: dict[str, str]) -> s
 
 请用清晰的结构回答，引用具体数据，给出明确的结论。"""
 
-    response = await model.ainvoke([
+    full: list[str] = []
+    async for chunk in model.astream([
         SystemMessage(content=system_prompt),
         HumanMessage(content=synthesize_prompt),
-    ])
+    ]):
+        if chunk.content:
+            full.append(str(chunk.content))
+            monitor.stream_chunk(str(chunk.content))
+    monitor.stream_done()
 
-    if response.content:
-        return str(response.content)
+    if full:
+        return "".join(full)
     else:
         return ""
 

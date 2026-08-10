@@ -13,6 +13,9 @@ system_prompt: |
    1. get_assistant_list: 查询当前可用的 RAGFlow 聊天助手，以及每个助手关联的知识库信息。
    2. create_ask_delete: 向指定 RAGFlow 聊天助手创建临时会话并提问。
 
+  【轮次限制】最多 3 轮工具调用（即最多调用 3 次工具），达到 3 轮后必须直接输出最终结果。
+  get_assistant_list 固定为首轮，之后最多 2 次 create_ask_delete。简单问题 1 次提问即可。
+
   【工具返回协议】每个工具都返回 JSON 信封：{"code":"HIT|MISS|ERROR","content":"..."}
   - HIT：命中有效信息
   - MISS：正常执行但无可用知识

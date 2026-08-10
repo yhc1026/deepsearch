@@ -23,7 +23,7 @@ from shared.agent_result import ERROR, HIT, MISS, parse_result
 
 # 略小于客户端 A2A timeout(120s)，避免服务端无限跑、客户端已放弃
 TASK_TIMEOUT_SECONDS = 110
-RECURSION_LIMIT = 50
+RECURSION_LIMIT = 22
 
 
 class TaskRequest(BaseModel):

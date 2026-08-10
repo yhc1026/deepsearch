@@ -1,14 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { cancelTask, listSessionFiles, startTask, uploadSessionFiles } from "../lib/api";
+import {
+  cancelTask,
+  deleteSession,
+  getSessionConversations,
+  listSessionFiles,
+  listSessions,
+  startTask,
+  uploadSessionFiles,
+} from "../lib/api";
 import { WS_BASE_URL } from "../lib/config";
 import { createThreadId, getStoredThreadId, storeThreadId } from "../lib/thread";
 import type {
   ConnectionState,
+  ConversationTurn,
   MonitorMessage,
   OutputFile,
+  SessionSummary,
   SocketMessage,
-  UploadedItem
+  UploadedItem,
 } from "../types";
+import type { ChatTurn } from "../components/ConversationThread";
 
 const MAX_EVENTS = 120;
 
@@ -34,6 +45,59 @@ export function useDeepAgentSession() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadedItems, setUploadedItems] = useState<UploadedItem[]>([]);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+
+  const loadSessionsList = useCallback(async () => {
+    try {
+      const response = await listSessions();
+      setSessions(response.sessions || []);
+    } catch {
+      // 历史列表加载失败时静默处理，不影响主功能
+    }
+  }, []);
+
+  const loadSession = useCallback(
+    async (targetThreadId: string): Promise<ChatTurn[]> => {
+      const response = await getSessionConversations(targetThreadId);
+      const turns: ChatTurn[] = (response.turns || []).map(
+        (turn: ConversationTurn) => ({
+          id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${turn.turn_index}`,
+          content: turn.user_query,
+          events: [],
+          files: turn.files || [],
+          isRunning: false,
+          result: turn.assistant_result || "",
+          timestamp: turn.created_at,
+        })
+      );
+
+      // 切换到该历史会话的 thread_id，后续消息会继续写入同一会话
+      storeThreadId(targetThreadId);
+      setThreadId(targetThreadId);
+      setEvents([]);
+      setResult("");
+      setLastError("");
+      setFiles([]);
+      setSessionPath("");
+      setUploadedItems([]);
+      uploadedNameSetRef.current.clear();
+      setIsRunning(false);
+      setIsCancelling(false);
+
+      return turns;
+    },
+    []
+  );
+
+  const removeSession = useCallback(
+    async (targetThreadId: string) => {
+      await deleteSession(targetThreadId);
+      setSessions((prev) =>
+        prev.filter((s) => s.thread_id !== targetThreadId)
+      );
+    },
+    []
+  );
 
   const clearSocketTimers = useCallback(() => {
     if (reconnectTimerRef.current) {
@@ -122,6 +186,13 @@ export function useDeepAgentSession() {
             }
           }
 
+          if (payload.event === "llm_stream") {
+            const chunk = extractString(payload.data, "chunk");
+            if (chunk) {
+              setResult((prev) => prev + chunk);
+            }
+          }
+
           if (payload.event === "task_result") {
             const finalResult = extractString(payload.data, "result");
             setResult(finalResult || payload.message);
@@ -191,6 +262,20 @@ export function useDeepAgentSession() {
 
     return () => window.clearInterval(timer);
   }, [isRunning, refreshFiles, sessionPath]);
+
+  // 组件挂载时加载历史会话列表
+  useEffect(() => {
+    loadSessionsList();
+  }, [loadSessionsList]);
+
+  // 任务完成后刷新历史会话列表
+  const prevIsRunning = useRef(isRunning);
+  useEffect(() => {
+    if (prevIsRunning.current && !isRunning) {
+      loadSessionsList();
+    }
+    prevIsRunning.current = isRunning;
+  }, [isRunning, loadSessionsList]);
 
   const submitTask = useCallback(
     async (query: string) => {
@@ -305,10 +390,14 @@ export function useDeepAgentSession() {
     isUploading,
     lastError,
     lastPongAt,
+    loadSession,
+    loadSessionsList,
     refreshFiles,
+    removeSession,
     resetSession,
     result,
     sessionPath,
+    sessions,
     stats,
     cancelCurrentTask,
     submitTask,
