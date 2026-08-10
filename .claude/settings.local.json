@@ -75,7 +75,15 @@
       "Bash(ls docker/mysql)",
       "Bash(wc -l docker/mysql/mysql.sql)",
       "Bash(cd *)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(git checkout *)",
+      "Bash(git -C \"D:\\\\code\\\\programs\\\\deepsearch\" submodule status)",
+      "Bash(python *)",
+      "Bash(D:/code/programs/deepsearch/.venv/Scripts/python.exe *)",
+      "Bash(mkdir -p agents/orchestrator)",
+      "Bash(mv orchestrator/* agents/orchestrator/)",
+      "Bash(rmdir orchestrator *)",
+      "Bash(grep -o '\\\\${[^}]*}' ragflow/docker/service_conf.yaml.template)"
     ]
   }
 }

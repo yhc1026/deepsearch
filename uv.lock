@@ -317,32 +317,65 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+database-query = [
+    { name = "langchain-mcp-adapters" },
+    { name = "mcp" },
+    { name = "mysql-connector-python" },
+]
+network-search = [
+    { name = "tavily-python" },
+]
+orchestrator = [
+    { name = "langchain-community" },
+    { name = "pandas" },
+    { name = "pypdf" },
+    { name = "python-docx" },
+    { name = "python-multipart" },
+    { name = "reportlab" },
+]
+ragflow = [
+    { name = "ragflow-sdk" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "deepagents", specifier = "==0.5.7" },
     { name = "fastapi", specifier = ">=0.100.0" },
     { name = "langchain", specifier = "==1.2.17" },
     { name = "langchain-community", specifier = ">=0.2.0" },
+    { name = "langchain-community", marker = "extra == 'orchestrator'", specifier = ">=0.2.0" },
     { name = "langchain-core", specifier = ">=0.2.0" },
     { name = "langchain-mcp-adapters", specifier = ">=0.1.0" },
+    { name = "langchain-mcp-adapters", marker = "extra == 'database-query'", specifier = ">=0.1.0" },
     { name = "langchain-openai", specifier = "==1.2.1" },
     { name = "langgraph", specifier = "==1.1.10" },
     { name = "mcp", specifier = ">=1.0.0" },
+    { name = "mcp", marker = "extra == 'database-query'", specifier = ">=1.0.0" },
     { name = "mysql-connector-python", specifier = ">=8.0.0" },
+    { name = "mysql-connector-python", marker = "extra == 'database-query'", specifier = ">=8.0.0" },
     { name = "openai", specifier = ">=1.0.0" },
     { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pandas", marker = "extra == 'orchestrator'", specifier = ">=2.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pypdf", specifier = ">=3.0.0" },
+    { name = "pypdf", marker = "extra == 'orchestrator'", specifier = ">=3.0.0" },
     { name = "python-docx", specifier = ">=1.0.0" },
+    { name = "python-docx", marker = "extra == 'orchestrator'", specifier = ">=1.0.0" },
     { name = "python-dotenv", specifier = "==1.2.2" },
     { name = "python-multipart", specifier = ">=0.0.6" },
+    { name = "python-multipart", marker = "extra == 'orchestrator'", specifier = ">=0.0.6" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ragflow-sdk", specifier = ">=0.1.0" },
+    { name = "ragflow-sdk", marker = "extra == 'ragflow'", specifier = ">=0.1.0" },
     { name = "reportlab", specifier = ">=4.0.0" },
+    { name = "reportlab", marker = "extra == 'orchestrator'", specifier = ">=4.0.0" },
     { name = "tavily-python", specifier = "==0.7.24" },
+    { name = "tavily-python", marker = "extra == 'network-search'", specifier = "==0.7.24" },
     { name = "typing-extensions", specifier = ">=4.5.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.20.0" },
 ]
+provides-extras = ["orchestrator", "network-search", "database-query", "ragflow"]
 
 [[package]]
 name = "distro"

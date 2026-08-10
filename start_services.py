@@ -23,7 +23,7 @@ import sys
 import time
 from typing import List, Tuple
 
-from app.utils.logger import setup_logging
+from shared.logger import setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -34,11 +34,11 @@ if shutil.which("uv") is None:
 
 # 服务列表: (名称, uvicorn app 路径, 端口)
 SERVICES: List[Tuple[str, str, int]] = [
-    ("主智能体",          "app.api.server:app",                       8000),
-    ("网络搜索智能体",    "app.services.network_search_service:app",  8001),
-    ("数据库查询智能体",  "app.services.database_query_service:app",  8002),
-    ("RAGFlow智能体",     "app.services.ragflow_service:app",         8003),
-    ("MySQL MCP Server",  "app.mcp.mysql_mcp_server:http_app",        8100),
+    ("主智能体",          "agents.orchestrator.server:app",                       8000),
+    ("网络搜索智能体",    "agents.network_search.server:app",              8001),
+    ("数据库查询智能体",  "agents.database_query.server:app",              8002),
+    ("RAGFlow智能体",     "agents.ragflow_search.server:app",                     8003),
+    ("MySQL MCP Server",  "agents.database_query.mcp_server:http_app", 8100),
 ]
 
 processes: List[Tuple[str, subprocess.Popen]] = []
@@ -64,7 +64,10 @@ def start_service(name: str, app_path: str, port: int, reload: bool = False) -> 
         errors="replace",
     )
     processes.append((name, proc))
-    reload_tag = " [reload]" if reload else ""
+    if reload:
+        reload_tag = " [reload]"
+    else:
+        reload_tag = ""
     logger.info(f"[{name}]{reload_tag} 启动中... http://localhost:{port}  (pid={proc.pid})")
     return proc
 

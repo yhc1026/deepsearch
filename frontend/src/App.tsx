@@ -1,28 +1,27 @@
-import {
-  ApiOutlined,
-  BranchesOutlined,
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-  CloudServerOutlined,
-  DatabaseOutlined,
-  FileSearchOutlined,
-  ToolOutlined
-} from "@ant-design/icons";
-import { Alert, App as AntApp, Button } from "antd";
+import { Alert, App as AntApp, Button, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { ChatComposer } from "./components/ChatComposer";
 import { ConversationThread } from "./components/ConversationThread";
 import type { ChatTurn } from "./components/ConversationThread";
-import { API_BASE_URL, WS_BASE_URL } from "./lib/config";
 import { useDeepAgentSession } from "./hooks/useDeepAgentSession";
 import type { ConnectionState, UploadedItem } from "./types";
 
-function connectionLabel(state: ConnectionState): string {
+function wsDotColor(state: ConnectionState): string {
+  const colors: Record<ConnectionState, string> = {
+    connected: "#10b981",
+    connecting: "#f59e0b",
+    reconnecting: "#f59e0b",
+    closed: "#ef4444",
+  };
+  return colors[state];
+}
+
+function wsDotLabel(state: ConnectionState): string {
   const labels: Record<ConnectionState, string> = {
-    connecting: "连接中",
-    connected: "已连接",
-    reconnecting: "重连中",
-    closed: "已关闭"
+    connected: "WebSocket 已连接",
+    connecting: "WebSocket 连接中",
+    reconnecting: "WebSocket 重连中",
+    closed: "WebSocket 已关闭",
   };
   return labels[state];
 }
@@ -136,87 +135,29 @@ export default function App() {
     setStagedItems([]);
   }
 
-  const online = session.connectionState === "connected";
+  const dotColor = wsDotColor(session.connectionState);
+  const dotLabel = wsDotLabel(session.connectionState);
 
   return (
     <div className="chat-app-shell min-h-dvh">
       <aside className="chat-sidebar" aria-label="会话信息">
         <div className="sidebar-brand">
-          <span className="panel-kicker">DEEPSEARCH</span>
-          <h1>深度研搜</h1>
-          <p>对话式多智能体研究台</p>
+          <span className="panel-kicker sidebar-brand-kicker">DEEPSEARCH</span>
         </div>
 
         <Button className="new-chat-button" block onClick={handleNewSession}>
-          新建研搜
+          新建会话
         </Button>
-
-        <div className="sidebar-section">
-          <span className="sidebar-label">THREAD</span>
-          <strong className="thread-id" title={session.threadId}>
-            {session.threadId.slice(0, 8)}
-          </strong>
-        </div>
-
-        <div className="sidebar-status-list">
-          <div className={`sidebar-status ${online ? "sidebar-status--online" : "sidebar-status--warn"}`}>
-            <ApiOutlined aria-hidden />
-            <span>WebSocket</span>
-            <strong>{connectionLabel(session.connectionState)}</strong>
-          </div>
-          <div className="sidebar-status">
-            <BranchesOutlined aria-hidden />
-            <span>助手调度</span>
-            <strong>{session.stats.assistantEvents}</strong>
-          </div>
-          <div className="sidebar-status">
-            <ToolOutlined aria-hidden />
-            <span>工具调用</span>
-            <strong>{session.stats.toolEvents}</strong>
-          </div>
-          <div className={session.stats.errorEvents > 0 ? "sidebar-status sidebar-status--error" : "sidebar-status"}>
-            <CloseCircleOutlined aria-hidden />
-            <span>异常</span>
-            <strong>{session.stats.errorEvents}</strong>
-          </div>
-        </div>
-
-        <div className="sidebar-section">
-          <span className="sidebar-label">AGENTS</span>
-          <ul className="agent-mini-list">
-            <li>
-              <CloudServerOutlined aria-hidden />
-              网络搜索助手
-            </li>
-            <li>
-              <DatabaseOutlined aria-hidden />
-              数据库查询助手
-            </li>
-            <li>
-              <FileSearchOutlined aria-hidden />
-              RAGFlow 助手
-            </li>
-          </ul>
-        </div>
-
-        <div className="sidebar-section sidebar-endpoints">
-          <span className="sidebar-label">ENDPOINTS</span>
-          <code>{API_BASE_URL}</code>
-          <code>{WS_BASE_URL}</code>
-        </div>
       </aside>
 
       <main className="chat-main">
-        <header className="chat-topbar">
-          <div>
-            <span className="panel-kicker">CHAT WORKSPACE</span>
-            <h2>深度研搜对话</h2>
-          </div>
-          <div className={`run-indicator ${session.isRunning ? "run-indicator--live" : ""}`}>
-            {session.isRunning ? <BranchesOutlined aria-hidden /> : <CheckCircleOutlined aria-hidden />}
-            {session.isRunning ? "研搜中" : "待命"}
-          </div>
-        </header>
+        <Tooltip title={dotLabel}>
+          <span
+            aria-label={dotLabel}
+            className="ws-status-dot"
+            style={{ background: dotColor }}
+          />
+        </Tooltip>
 
         {session.lastError ? (
           <Alert
