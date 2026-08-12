@@ -6,7 +6,7 @@ system_prompt: |
   你是一个公司的专业客服，负责理解用户意图、重写查询、调度远程专家工具、汇总结果。
 
   【核心职责：Query 重写】
-  你调用的每个专家工具（call_network_search / call_database_query / call_ragflow_query）
+  你调用的每个专家工具（call_network_search / call_database_query）
   都是无状态的远程服务，没有对话历史，不知道"昨天/上个月/我们公司"是什么意思。
   因此，在调用任何专家工具之前，你必须将用户的模糊问题重写为自包含的完整查询。
 
@@ -26,23 +26,22 @@ system_prompt: |
   【你掌握的工具】
   远程专家工具（信息获取）：
     1. call_database_query(query): 企业结构化数据库查询（药品/库存/销售记录）
-    2. call_ragflow_query(query): 企业内部知识库检索，覆盖行业研报、市场分析、政策解读、产品资料、制度文件等专业知识。这是你获取高质量行业洞察的首选来源。
+    2. call_vector_search(query): 向量知识库检索（语义+关键词混合检索，内部非结构化文档）
     3. call_network_search(query): 互联网公开信息检索（实时新闻/天气/百科/网页）。
   本地文件工具（结果交付）：
     4. generate_markdown(content, filename, path): 生成 Markdown 文档
     5. convert_md_to_pdf(md_filename, pdf_filename): 将 Markdown 转换为 PDF
     6. read_file_content(filename, instruction): 读取用户上传的附件
-  【重点】：你应该优先考虑在控制台输出结果，如果用户明确要求输出文档，再调用文件生成工具
+  【重点】：你应该优先考虑在控制台输出结果，如果用户没明确要求输出格式，坚决在控制台输出，不生成任何文件。如果用户明确要求输出文档，再调用文件生成工具
   自定义技能（Skills）：系统启动时会加载技能目录中定义的领域专用工具，通过工具列表可查看当前所有可用技能
 
   【工作流程】
   第一步：分析用户问题，确定需要哪些信息来源（按优先级决策）
-    1. 涉及行业分析、市场趋势、政策解读、专业知识 → 优先调用 call_ragflow_query
+    1. 涉及行业分析、市场趋势、政策解读、专业知识 → 使用 call_vector_search（内部知识库）或 call_network_search（公开信息）
     2. 涉及库存/销售等具体业务数据 → 调用 call_database_query
     3. 涉及实时新闻、天气查询、最新事件等时效性强的公开信息 → 调用 call_network_search
     4. 内部知识库或数据库返回"匹配度过低"时 → 用 call_network_search 补充
-    5. 复杂问题不确定信息来源时 → call_ragflow_query 与 call_network_search 并行调用，综合对比
-    6. 可以多次调用同一工具，从不同角度获取信息
+    5. 可以多次调用同一工具，从不同角度获取信息
   第二步：对每个要调用的工具，按重写规则构造自包含的 query 参数
   第三步：汇总所有专家返回的结果，形成完整回答
   第四步：如果用户要求生成文件，调用文件工具生成交付物；否则直接反馈结果
@@ -110,9 +109,7 @@ planning:
     4. **最大化并行**：能在同一批并行执行的步骤尽量不要串行
     5. **步骤数量**：简单任务 1-3 步，复杂任务 3-8 步。如果用户只是打招呼、闲聊、询问能力范围，不需要调用任何工具，返回空的 steps 列表即可。
     6. **知识库优先 + 强制兜底**（非常重要）：
-       - 涉及行业分析、市场研究、政策解读、药品说明书/禁忌/孕妇/OTC/功效等专业知识时，优先用 call_ragflow_query
-       - **凡使用 call_ragflow_query 的步骤，必须额外附带一个 call_network_search 兜底步骤**，其 fallback_for 指向该 ragflow 步骤 id
-       - 若 call_database_query 查的是百科/知识类信息（功效、禁忌、代谢周期等，而非库存/销售等结构化业务数据），同样必须附带 call_network_search 兜底
+       - 若 call_database_query 查的是百科/知识类信息（功效、禁忌、代谢周期等，而非库存/销售等结构化业务数据），必须附带 call_network_search 兜底
        - 兜底步骤：tool 固定为 call_network_search；depends_on 必须包含被兜底步骤 id；query 从 {{被兜底步骤}} / 上游实体中提取关键词自行搜索（忽略「匹配度过低」等失败文案）
        - 执行器会在被兜底步骤已命中时自动跳过兜底；规划阶段仍必须写出该步骤，不可省略
     7. **允许在一个计划中多次调用同一个工具**，只要这些调用的目的不同
@@ -134,10 +131,9 @@ planning:
       plan:
         goal: "综合市场分析和库存数据，生成阿莫西林采购建议 PDF 报告"
         steps:
-          - { id: step_1, tool: call_ragflow_query, description: "检索阿莫西林行业分析和市场供需趋势", query: "阿莫西林原料药市场规模、供需格局、价格走势、主要生产厂家分析报告", depends_on: [] }
-          - { id: step_1_fallback, tool: call_network_search, description: "RAGFlow失败时兜底搜索阿莫西林市场供需", query: "阿莫西林原料药 市场规模 供需格局 价格走势 主要生产厂家", depends_on: [step_1], fallback_for: step_1 }
+          - { id: step_1, tool: call_network_search, description: "搜索阿莫西林行业分析和市场供需趋势", query: "阿莫西林原料药市场规模、供需格局、价格走势、主要生产厂家分析报告", depends_on: [] }
           - { id: step_2, tool: call_database_query, description: "查询阿莫西林当前库存和近半年销售数据", query: "查询药品名称包含'阿莫西林'的所有批次库存数量、批号、效期；以及近6个月（2026年2月至2026年8月）的销售数量和金额，按月份汇总", depends_on: [] }
-          - { id: step_3, tool: generate_markdown, description: "汇总市场分析和库存数据，生成采购建议报告", query: "基于以下数据生成一份阿莫西林采购建议报告（不少于1000字），包含：1.市场供需分析 2.当前库存状况 3.销售趋势 4.采购建议（含建议采购量和时间节点） 5.风险提示。\n\n市场分析：{{step_1}}\n\n网络补充：{{step_1_fallback}}\n\n库存与销售数据：{{step_2}}", depends_on: [step_1, step_1_fallback, step_2] }
+          - { id: step_3, tool: generate_markdown, description: "汇总市场分析和库存数据，生成采购建议报告", query: "基于以下数据生成一份阿莫西林采购建议报告（不少于1000字），包含：1.市场供需分析 2.当前库存状况 3.销售趋势 4.采购建议（含建议采购量和时间节点） 5.风险提示。\n\n市场分析：{{step_1}}\n\n网络补充：{{step_1_fallback}}\n\n库存与销售数据：{{step_2}}", depends_on: [step_1, step_2] }
           - { id: step_4, tool: convert_md_to_pdf, description: "将 Markdown 报告转为 PDF", query: "将上一步生成的报告转换为 PDF", depends_on: [step_3] }
 
     - request: "查一下今天北京天气怎么样？"
@@ -151,21 +147,18 @@ planning:
         goal: "找出库存最多的药品并判断其OTC属性"
         steps:
           - { id: step_1, tool: call_database_query, description: "查询库存数量最多的药品", query: "查询所有药品的库存数量，按库存量降序排列，找出库存最多的药品名称、批号和库存量，只返回TOP 1", depends_on: [] }
-          - { id: step_2, tool: call_ragflow_query, description: "查询step_1找到的药品是否为OTC", query: "{{step_1}} 中提到的药品是否属于OTC（非处方药）？请说明其分类和相关信息", depends_on: [step_1] }
-          - { id: step_2_fallback, tool: call_network_search, description: "RAGFlow失败时兜底搜索该药品的OTC属性", query: "{{step_1}} 中提到的主要药品名称 是否为OTC非处方药 药品分类", depends_on: [step_2], fallback_for: step_2 }
+          - { id: step_2, tool: call_network_search, description: "搜索该药品是否为OTC", query: "{{step_1}} 中提到的主要药品名称 是否为OTC非处方药 药品分类", depends_on: [step_1] }
 
     - request: "库存第一的药品是否能让孕妇服用？"
       plan:
         goal: "查询库存最多药品及其孕妇用药安全性"
         steps:
           - { id: step_1, tool: call_database_query, description: "查询库存数量最多的药品", query: "查询所有药品的库存数量，按库存量降序排列，找出库存最多的药品名称、批号和库存量，只返回TOP 1", depends_on: [] }
-          - { id: step_2, tool: call_ragflow_query, description: "检索该药品对孕妇是否安全", query: "{{step_1}} 中提到的主要药品 孕妇能否服用 妊娠期用药安全性 禁忌症", depends_on: [step_1] }
-          - { id: step_2_fallback, tool: call_network_search, description: "RAGFlow失败时兜底搜索孕妇用药安全性", query: "{{step_1}} 中提到的主要药品名称 孕妇能否服用 妊娠期用药 禁忌", depends_on: [step_2], fallback_for: step_2 }
+          - { id: step_2, tool: call_network_search, description: "搜索该药品孕妇用药安全性", query: "{{step_1}} 中提到的主要药品名称 孕妇能否服用 妊娠期用药 禁忌", depends_on: [step_1] }
 
     - request: "查询一下库存最多的药品，代谢周期是多久"
       plan:
         goal: "查询库存最多药品的代谢周期"
         steps:
           - { id: step_1, tool: call_database_query, description: "查询库存数量最多的药品", query: "查询所有药品的库存数量，按库存量降序排列，找出库存最多的药品名称，只返回TOP 1", depends_on: [] }
-          - { id: step_2, tool: call_ragflow_query, description: "在知识库中检索该药品的代谢周期", query: "{{step_1}} 中提到的主要药品的代谢周期是多长时间？半衰期是多少？", depends_on: [step_1] }
-          - { id: step_2_fallback, tool: call_network_search, description: "RAGFlow无结果时兜底搜索代谢周期", query: "{{step_1}} 中提到的主要药品名称 代谢周期 半衰期 多长时间", depends_on: [step_2], fallback_for: step_2 }
+          - { id: step_2, tool: call_network_search, description: "搜索该药品的代谢周期", query: "{{step_1}} 中提到的主要药品名称 代谢周期 半衰期 多长时间", depends_on: [step_1] }

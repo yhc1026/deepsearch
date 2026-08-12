@@ -53,7 +53,8 @@ project_root_path = Path(__file__).parents[2].resolve()
 _TOOL_ABBREV = {
     "call_network_search":  "网络搜索",
     "call_database_query":  "数据库",
-    "call_ragflow_query":   "RAGFlow",
+    # "call_ragflow_query":   "RAGFlow",  # TODO: 取消注释以启用 RAGFlow
+    "call_vector_search":   "向量检索",
     "read_file_content":    "读附件",
     "generate_markdown":    "生成MD",
     "convert_md_to_pdf":    "转PDF",
@@ -332,7 +333,7 @@ async def _synthesize(task_query: str, plan: Plan, results: dict[str, str]) -> s
     # 纯问答场景：用 LLM 整合所有信息获取结果
     info_steps = [
         s for s in plan.steps
-        if s.tool in ("call_network_search", "call_database_query", "call_ragflow_query")
+        if s.tool in ("call_network_search", "call_database_query", "call_vector_search")  # call_ragflow_query 已禁用
     ]
 
     if not info_steps:

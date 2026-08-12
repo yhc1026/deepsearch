@@ -1,11 +1,12 @@
 """
 DeepSearch Agents 一键启动脚本 (单机多进程版)
 
-启动 4 个独立 Agent 服务:
+启动 5 个独立 Agent 服务:
   - port 8000: 主智能体 (Orchestrator + Query Rewriter)
   - port 8001: 网络搜索智能体 (Tavily)
   - port 8002: 数据库查询智能体 (MySQL)
   - port 8003: RAGFlow 智能体 (RAGFlow SDK)
+  - port 8004: 向量检索智能体 (ChromaDB + OpenAI Embedding)
 
 使用方式:
   uv run python start_services.py              # 生产模式，无热重载
@@ -41,7 +42,8 @@ SERVICES: List[Tuple[str, str, int | None]] = [
     ("主智能体",          "agents.orchestrator.server:app",                       8000),
     ("网络搜索智能体",    "agents.network_search.server:app",              8001),
     ("数据库查询智能体",  "agents.database_query.server:app",              8002),
-    ("RAGFlow智能体",     "agents.ragflow_search.server:app",                     8003),
+    # ("RAGFlow智能体",     "agents.ragflow_search.server:app",                     8003),  # TODO: 取消注释以启用 RAGFlow
+    ("向量检索智能体",    "agents.vector_search.server:app",               8004),
     ("MySQL MCP Server",  "agents.database_query.mcp_server:http_app", 8100),
     ("异步摘要Agent",     "agents.backend.summary_agent.server:main",    None),
 ]
@@ -125,11 +127,12 @@ if __name__ == "__main__":
     print(f"    {'主智能体 (WebSocket+HTTP)':<30} http://localhost:8000")
     print(f"    {'网络搜索智能体 A2A':<30} http://localhost:8001")
     print(f"    {'数据库查询智能体 A2A':<30} http://localhost:8002")
-    print(f"    {'RAGFlow智能体 A2A':<30} http://localhost:8003")
+    # print(f"    {'RAGFlow智能体 A2A':<30} http://localhost:8003")  # TODO: 取消注释以启用 RAGFlow
+    print(f"    {'向量检索智能体 A2A':<30} http://localhost:8004")
     print(f"    {'MySQL MCP Server':<30} http://localhost:8100")
     print()
     print("  前端连接: http://localhost:8000")
-    print("  Agent Cards: GET http://localhost:800{1,2,3}/")
+    print("  Agent Cards: GET http://localhost:800{1,2,3,4}/")
     print("  MCP Status:  POST http://localhost:8100/mcp")
     if reload_mode:
         print()

@@ -32,6 +32,7 @@ export function useDeepAgentSession() {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
   const heartbeatTimerRef = useRef<number | undefined>(undefined);
+  const lastCloseTimeRef = useRef<number>(0);
   const uploadedNameSetRef = useRef<Set<string>>(new Set());
   const [threadId, setThreadId] = useState(getStoredThreadId);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
@@ -231,6 +232,13 @@ export function useDeepAgentSession() {
           setConnectionState("closed");
           return;
         }
+        // 防止 StrictMode 双重挂载引发的重连振荡：关闭旧 socket 时其
+        // onclose 闭包捕获了新 effect 的 disposed=false，误判为意外断开
+        const now = Date.now();
+        if (now - lastCloseTimeRef.current < 3000) {
+          return;
+        }
+        lastCloseTimeRef.current = now;
         setConnectionState("reconnecting");
         reconnectTimerRef.current = window.setTimeout(connect, 2000);
       };

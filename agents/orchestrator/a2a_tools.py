@@ -19,7 +19,8 @@ from shared.monitor import monitor
 SUBAGENT_URLS = {
     "network_search": "http://localhost:8001",
     "database_query": "http://localhost:8002",
-    "ragflow": "http://localhost:8003",
+    # "ragflow": "http://localhost:8003",  # TODO: 取消注释以启用 RAGFlow
+    "vector_search": "http://localhost:8004",
 }
 
 TIMEOUT_SECONDS = 120
@@ -143,15 +144,30 @@ async def call_database_query(query: str) -> str:
     return await _call_subagent("database_query", query, "A2A-数据库查询助手")
 
 
-@tool
-async def call_ragflow_query(query: str) -> str:
-    """调用RAGFlow助手，查询企业内部私有知识库中的非结构化文档。
+# @tool
+# async def call_ragflow_query(query: str) -> str:
+#     """调用RAGFlow助手，查询企业内部私有知识库中的非结构化文档。
+#
+#     重要：传入的 query 必须是自包含的完整问题。你需要先对用户的原始问题进行重写:
+#     - 明确要检索的知识领域和主题
+#     - 消解指代和简称
+#     - 复杂问题分解为多角度查询
+#
+#     适用场景：PDF、白皮书、研报、制度文件、产品资料等内部文档的知识检索。
+#     """
+#     return await _call_subagent("ragflow", query, "A2A-RAGFlow助手")
+# TODO: 取消注释以上代码块以启用 RAGFlow
 
-    重要：传入的 query 必须是自包含的完整问题。你需要先对用户的原始问题进行重写:
+@tool
+async def call_vector_search(query: str, collection: str = "default") -> str:
+    """调用向量检索助手，在内部向量知识库中执行混合检索（语义向量 + 关键词）。
+
+    重要：传入的 query 必须是自包含的完整检索问题。你需要先对用户的原始问题进行重写:
     - 明确要检索的知识领域和主题
     - 消解指代和简称
-    - 复杂问题分解为多角度查询
+    - 包含完整的关键词
 
-    适用场景：PDF、白皮书、研报、制度文件、产品资料等内部文档的知识检索。
+    检索能力：支持多路召回（3 query 变体）、向量语义检索 + 关键词匹配的混合策略。
+    适用场景：企业内部非结构化文档的知识检索。
     """
-    return await _call_subagent("ragflow", query, "A2A-RAGFlow助手")
+    return await _call_subagent("vector_search", query, "A2A-向量检索助手")

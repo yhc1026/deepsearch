@@ -11,11 +11,11 @@ const agents = [
     name: "数据库查询助手",
     detail: "MySQL 表结构、商品信息、库存与销售数据查询"
   },
-  {
-    icon: <FileSearchOutlined aria-hidden />,
-    name: "RAGFlow 助手",
-    detail: "内部 PDF、白皮书、研报与私有知识库问答"
-  }
+  // {  // TODO: 取消注释以启用 RAGFlow
+  //   icon: <FileSearchOutlined aria-hidden />,
+  //   name: "RAGFlow 助手",
+  //   detail: "内部 PDF、白皮书、研报与私有知识库问答"
+  // },
 ];
 
 export function AgentTopology() {

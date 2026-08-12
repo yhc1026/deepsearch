@@ -32,5 +32,6 @@ main_agent_content = load_agent_prompts("orchestrator")
 sub_agents_content = {
     "tavily": load_agent_prompts("network_search"),
     "db": load_agent_prompts("database_query"),
-    "ragflow": load_agent_prompts("ragflow_search"),
+    # "ragflow": load_agent_prompts("ragflow_search"),  # TODO: 取消注释以启用 RAGFlow
+    "vector_search": load_agent_prompts("vector_search"),
 }

@@ -83,7 +83,20 @@
       "Bash(mkdir -p agents/orchestrator)",
       "Bash(mv orchestrator/* agents/orchestrator/)",
       "Bash(rmdir orchestrator *)",
-      "Bash(grep -o '\\\\${[^}]*}' ragflow/docker/service_conf.yaml.template)"
+      "Bash(grep -o '\\\\${[^}]*}' ragflow/docker/service_conf.yaml.template)",
+      "Bash(cat .venv/pyvenv.cfg)",
+      "Bash(ls -la .venv/Scripts/python*)",
+      "Bash(conda info *)",
+      "Bash(.venv/Scripts/python -m pip install ragflow-sdk)",
+      "Bash(.venv/Scripts/python.exe --version)",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; print\\(sys.executable\\); print\\(sys.base_prefix\\)\")",
+      "Bash(conda config *)",
+      "Read(//c/Users/47894/**)",
+      "Bash(uv python *)",
+      "Bash(uv venv *)",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; print\\('Python:', sys.executable\\); print\\('prefix:', sys.prefix\\); import ragflow_sdk; print\\('ragflow_sdk OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe)",
+      "Bash(.venv/Scripts/python.exe -c ' *)"
     ]
   }
 }

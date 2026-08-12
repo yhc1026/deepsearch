@@ -253,14 +253,24 @@ def _strip_json_fence(content: str) -> str:
 def _default_tools() -> list[ToolInfo]:
     """主智能体当前可用的工具清单。"""
     return [
+
+        # ToolInfo(
+        #     name="call_ragflow_query",
+        #     category="info",
+        #     description=(
+        #         "查询 RAGFlow 内部知识库，覆盖行业研报、市场分析、政策解读、"
+        #         "产品资料、制度文件等专业领域知识。涉及行业趋势、市场研究、"
+        #         "专业知识问答时优先使用。参数 query: 自包含的检索问题。"
+        #     ),
+        # ),
         # 远程信息获取工具
         ToolInfo(
-            name="call_ragflow_query",
+            name="call_vector_search",
             category="info",
             description=(
-                "查询 RAGFlow 内部知识库，覆盖行业研报、市场分析、政策解读、"
-                "产品资料、制度文件等专业领域知识。涉及行业趋势、市场研究、"
-                "专业知识问答时优先使用。参数 query: 自包含的检索问题。"
+                "查询向量知识库（ChromaDB），支持语义检索+关键词匹配的混合检索。"
+                "自动执行多路召回（3个查询变体），适合内部非结构化文档的知识检索。"
+                "可作为 RAGFlow 的并行替补方案。参数 query: 自包含的完整检索问题。"
             ),
         ),
         ToolInfo(
@@ -344,7 +354,7 @@ _DEFAULT_PLANNING_SYSTEM_PROMPT = """你是一个资深的任务规划专家。�
    - 在 B 的 query 中用 `{{step_X}}` 引用 A 的完整结果，或用 `{{step_X.field_name}}` 引用 A 结果中的特定字段
 
 3. **顺序约束**：
-   - 信息获取工具（call_ragflow_query / call_database_query / call_network_search）必须在文件生成之前
+   - 信息获取工具（call_database_query / call_network_search / call_vector_search）必须在文件生成之前
    - 文件生成工具（generate_markdown）必须放在所有信息获取步骤之后，且 depends_on 必须包含所有信息获取步骤
    - convert_md_to_pdf 必须依赖 generate_markdown 的步骤
 
@@ -352,9 +362,9 @@ _DEFAULT_PLANNING_SYSTEM_PROMPT = """你是一个资深的任务规划专家。�
 
 5. **步骤数量**：简单任务 1-3 步，复杂任务 3-8 步。如果用户只是打招呼、闲聊、询问能力范围，不需要调用任何工具，返回空的 steps 列表即可。
 
-6. **知识库优先 + 强制兜底**：
-   - 涉及行业分析、市场研究、政策解读时优先用 call_ragflow_query
-   - 任何使用 call_ragflow_query 的步骤，**必须**附带一个 fallback_for 指向它的 call_network_search 兜底步骤
+6. **知识库检索 + 强制兜底**：
+   #   - 涉及行业分析、市场研究、政策解读时优先用 call_ragflow_query  # TODO: 取消注释以启用 RAGFlow
+   #   - 任何使用 call_ragflow_query 的步骤，**必须**附带一个 fallback_for 指向它的 call_network_search 兜底步骤  # TODO: 取消注释以启用 RAGFlow
    - 任何使用 call_database_query 查询「百科类/知识类」信息（如药品功效、代谢周期、适用症状等非结构化知识）的步骤，**必须**附带一个 fallback_for 指向它的 call_network_search 兜底步骤
    - 兜底步骤的 depends_on 必须包含被兜底的步骤 id，query 中引用 {{被兜底步骤id}} 来知道搜索目标（但要忽略匹配度过低的文本，提取其中的实体名称自行搜索）
    - 兜底步骤的 tool 统一用 call_network_search
@@ -399,11 +409,18 @@ _DEFAULT_EXAMPLES = [
             "steps": [
                 {
                     "id": "step_1",
-                    "tool": "call_ragflow_query",
-                    "description": "检索阿莫西林行业分析和市场供需趋势",
+                    "tool": "call_network_search",
+                    "description": "搜索阿莫西林行业分析和市场供需趋势",
                     "query": "阿莫西林原料药市场规模、供需格局、价格走势、主要生产厂家分析报告",
                     "depends_on": [],
                 },
+                # {
+                #     "id": "step_1",
+                #     "tool": "call_ragflow_query",
+                #     "description": "检索阿莫西林行业分析和市场供需趋势",
+                #     "query": "阿莫西林原料药市场规模、供需格局、价格走势、主要生产厂家分析报告",
+                #     "depends_on": [],
+                # },  # TODO: 取消注释以上以启用 RAGFlow，并恢复 call_network_search 为兜底步骤
                 {
                     "id": "step_2",
                     "tool": "call_database_query",
@@ -457,19 +474,26 @@ _DEFAULT_EXAMPLES = [
                 },
                 {
                     "id": "step_2",
-                    "tool": "call_ragflow_query",
-                    "description": "查询step_1找到的药品是否为OTC",
-                    "query": "{{step_1}} 中提到的药品是否属于OTC（非处方药）？请说明其分类和相关信息",
+                    "tool": "call_network_search",
+                    "description": "搜索该药品是否为OTC",
+                    "query": "{{step_1}} 中提到的主要药品名称 是否为OTC非处方药 药品分类",
                     "depends_on": ["step_1"],
                 },
-                {
-                    "id": "step_2_fallback",
-                    "tool": "call_network_search",
-                    "description": "RAGFlow失败时兜底搜索该药品的OTC属性",
-                    "query": "{{step_1}} 中提到的主要药品名称 是否为OTC非处方药 药品分类",
-                    "depends_on": ["step_2"],
-                    "fallback_for": "step_2",
-                },
+                # {  # TODO: 取消注释以下以启用 RAGFlow，并将 call_network_search 改为兜底步骤
+                #     "id": "step_2",
+                #     "tool": "call_ragflow_query",
+                #     "description": "查询step_1找到的药品是否为OTC",
+                #     "query": "{{step_1}} 中提到的药品是否属于OTC（非处方药）？请说明其分类和相关信息",
+                #     "depends_on": ["step_1"],
+                # },
+                # {
+                #     "id": "step_2_fallback",
+                #     "tool": "call_network_search",
+                #     "description": "RAGFlow失败时兜底搜索该药品的OTC属性",
+                #     "query": "{{step_1}} 中提到的主要药品名称 是否为OTC非处方药 药品分类",
+                #     "depends_on": ["step_2"],
+                #     "fallback_for": "step_2",
+                # },
             ],
         },
     },
@@ -487,19 +511,26 @@ _DEFAULT_EXAMPLES = [
                 },
                 {
                     "id": "step_2",
-                    "tool": "call_ragflow_query",
-                    "description": "在知识库中检索该药品的代谢周期",
-                    "query": "{{step_1}} 中提到的主要药品的代谢周期是多长时间？半衰期是多少？",
+                    "tool": "call_network_search",
+                    "description": "搜索该药品的代谢周期",
+                    "query": "{{step_1}} 中提到的主要药品名称 代谢周期 半衰期 多长时间",
                     "depends_on": ["step_1"],
                 },
-                {
-                    "id": "step_2_fallback",
-                    "tool": "call_network_search",
-                    "description": "RAGFlow无结果时兜底搜索代谢周期",
-                    "query": "{{step_1}} 中提到的主要药品名称 代谢周期 半衰期 多长时间",
-                    "depends_on": ["step_2"],
-                    "fallback_for": "step_2",
-                },
+                # {  # TODO: 取消注释以下以启用 RAGFlow，并将 call_network_search 改为兜底步骤
+                #     "id": "step_2",
+                #     "tool": "call_ragflow_query",
+                #     "description": "在知识库中检索该药品的代谢周期",
+                #     "query": "{{step_1}} 中提到的主要药品的代谢周期是多长时间？半衰期是多少？",
+                #     "depends_on": ["step_1"],
+                # },
+                # {
+                #     "id": "step_2_fallback",
+                #     "tool": "call_network_search",
+                #     "description": "RAGFlow无结果时兜底搜索代谢周期",
+                #     "query": "{{step_1}} 中提到的主要药品名称 代谢周期 半衰期 多长时间",
+                #     "depends_on": ["step_2"],
+                #     "fallback_for": "step_2",
+                # },
             ],
         },
     },

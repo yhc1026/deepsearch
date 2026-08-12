@@ -36,7 +36,8 @@ from shared.agent_result import ERROR, HIT, MISS, needs_fallback, parse_result
 from agents.orchestrator.a2a_tools import (
     call_database_query,
     call_network_search,
-    call_ragflow_query,
+    # call_ragflow_query,  # TODO: 取消注释以启用 RAGFlow
+    call_vector_search,
 )
 from agents.orchestrator.markdown_tools import generate_markdown
 from agents.orchestrator.pdf_tools import convert_md_to_pdf
@@ -46,14 +47,15 @@ from agents.orchestrator.upload_file_read_tool import read_file_content
 _TOOL_REGISTRY: dict[str, Any] = {
     "call_network_search": call_network_search,
     "call_database_query": call_database_query,
-    "call_ragflow_query": call_ragflow_query,
+    # "call_ragflow_query": call_ragflow_query,  # TODO: 取消注释以启用 RAGFlow
+    "call_vector_search": call_vector_search,
     "read_file_content": read_file_content,
     "generate_markdown": generate_markdown,
     "convert_md_to_pdf": convert_md_to_pdf,
 }
 
 # A2A 信息获取工具（query → {"query": query}）
-_A2A_TOOLS = {"call_network_search", "call_database_query", "call_ragflow_query"}
+_A2A_TOOLS = {"call_network_search", "call_database_query", "call_vector_search"}  # call_ragflow_query 已禁用
 
 
 def _extract_template_step_ids(template: str) -> list[str]:

@@ -26,10 +26,14 @@ class ToolMonitor:
 
     _instance = None
 
+    # 流式输出缓冲阈值：累积多少字符后发送一次 WebSocket 消息
+    _STREAM_FLUSH_CHARS = 30
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(ToolMonitor, cls).__new__(cls)
             cls._instance.websocket_manager = None
+            cls._instance._stream_buffer: dict[str, list[str]] = {}
         return cls._instance
 
     def set_websocket_manager(self, manager: "ConnectionManager") -> None:
@@ -146,11 +150,28 @@ class ToolMonitor:
         self._emit("task_cancelled", "任务已取消")
 
     def stream_chunk(self, chunk: str) -> None:
-        """推送 LLM 流式输出的单个文本块到前端。"""
-        self._emit("llm_stream", "", {"chunk": chunk})
+        """推送 LLM 流式输出的单个文本块到前端。
+
+        采用缓冲机制：每收到一个 token 先存入缓冲区，只有累积超过阈值
+        或流结束时才实际发送 WebSocket 消息。避免每个 token 都创建
+        asyncio Task 和 WebSocket 帧，大幅减少调度开销。
+        """
+        thread_id = getattr(self, "_current_thread_id", "__default__")
+        buf = self._stream_buffer.setdefault(thread_id, [])
+        buf.append(chunk)
+        if sum(len(c) for c in buf) >= self._STREAM_FLUSH_CHARS:
+            self._emit("llm_stream", "", {"chunk": "".join(buf)})
+            buf.clear()
 
     def stream_done(self) -> None:
-        """通知前端当前流式输出阶段已结束。"""
+        """通知前端当前流式输出阶段已结束。
+
+        先刷出缓冲区中剩余的 chunk，再发送结束信号。
+        """
+        thread_id = getattr(self, "_current_thread_id", "__default__")
+        buf = self._stream_buffer.pop(thread_id, [])
+        if buf:
+            self._emit("llm_stream", "", {"chunk": "".join(buf)})
         self._emit("llm_stream_done", "", {})
 
     def report_session_dir(self, path: str) -> None:

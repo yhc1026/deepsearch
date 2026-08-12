@@ -4,28 +4,67 @@ MCP 客户端工具加载模块
 通过 Streamable HTTP transport 连接独立部署的 MCP Server，列出工具并包装为 LangChain StructuredTool。
 支持 TTL 缓存 + 后台定时刷新，实现工具热插拔。
 
-连接策略：list_tools / call_tool 均使用短生命周期 session，在同一 asyncio Task 内
-enter + aclose，避免 anyio cancel scope 跨 Task 退出报错。
+连接策略：维持一个长连接 session，list_tools / call_tool 复用同一个 session。
+session 断开时自动重连，避免频繁建连导致 Streamable HTTP 竞态报错。
 """
 
+import asyncio
 import logging
 import os
 import time
 from contextlib import AsyncExitStack
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
 
 # ── 配置 ──────────────────────────────────────────────────────
 MCP_SERVER_URL = os.getenv("MCP_MYSQL_SERVER_URL", "http://127.0.0.1:8100/mcp")
 TOOL_CACHE_TTL = int(os.getenv("MCP_TOOL_CACHE_TTL", "30"))  # 缓存有效期（秒）
 
-# ── 缓存状态（仅缓存工具包装对象，不持有长连接）────────────────
-_cached_tools: list = []
-_cache_timestamp: float = 0
-_cache_tool_names: list[str] = []
+# ── 持久 session ─────────────────────────────────────────────
+_session_lock = asyncio.Lock()
+_exit_stack: AsyncExitStack | None = None
+_persistent_session: Any = None
+
+
+async def _ensure_session():
+    """获取或创建持久 MCP session，断开时自动重连。"""
+    from mcp import ClientSession
+
+    global _exit_stack, _persistent_session
+
+    if _persistent_session is not None:
+        return _persistent_session
+
+    async with _session_lock:
+        if _persistent_session is not None:
+            return _persistent_session
+
+        streamable_http_client = _get_mcp_client()
+        _exit_stack = AsyncExitStack()
+        transports = await _exit_stack.enter_async_context(
+            streamable_http_client(MCP_SERVER_URL)
+        )
+        read_stream, write_stream = transports[0], transports[1]
+        _persistent_session = await _exit_stack.enter_async_context(
+            ClientSession(read_stream, write_stream)
+        )
+        await _persistent_session.initialize()
+        logger.info("MCP 持久 session 已建立")
+        return _persistent_session
+
+
+async def _reset_session():
+    """断开持久 session（下次调用 _ensure_session 时会自动重连）。"""
+    global _exit_stack, _persistent_session
+
+    _persistent_session = None
+    if _exit_stack:
+        try:
+            await _exit_stack.aclose()
+        except Exception:
+            pass
+        _exit_stack = None
 
 
 def _get_mcp_client():
@@ -33,6 +72,12 @@ def _get_mcp_client():
     from mcp.client.streamable_http import streamable_http_client
 
     return streamable_http_client
+
+
+# ── 缓存状态 ─────────────────────────────────────────────────
+_cached_tools: list = []
+_cache_timestamp: float = 0
+_cache_tool_names: list[str] = []
 
 
 def _json_schema_to_pydantic_field(schema: dict[str, Any]) -> Any:
@@ -48,126 +93,85 @@ def _json_schema_to_pydantic_field(schema: dict[str, Any]) -> Any:
     return field_type
 
 
-async def _with_mcp_session(fn: Callable[[Any], Awaitable[T]]) -> T:
-    """在同一 Task 内打开 MCP session、执行回调、再关闭，避免 cancel scope 跨 Task。"""
-    from mcp import ClientSession
-
-    exit_stack = AsyncExitStack()
-    try:
-        streamable_http_client = _get_mcp_client()
-        transports = await exit_stack.enter_async_context(
-            streamable_http_client(MCP_SERVER_URL)
-        )
-        # streamable_http 可能返回 (read, write) 或 (read, write, get_session_id)
-        read_stream, write_stream = transports[0], transports[1]
-        session = await exit_stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
-        )
-        await session.initialize()
-        return await fn(session)
-    finally:
-        try:
-            await exit_stack.aclose()
-        except Exception as e:
-            # 关闭阶段偶发异常不影响业务；记录后吞掉避免污染日志
-            logger.debug(f"MCP session 关闭时忽略异常: {e}")
-
-
 async def _discover_tools_from_server() -> list:
-    """连接 MCP Server 列出工具，包装为每次调用自建短连接的 LangChain StructuredTool。"""
+    """通过持久 session 列出工具，包装为 LangChain StructuredTool。"""
     from langchain_core.tools import StructuredTool
     from pydantic import Field, create_model
 
-    async def _list_and_wrap(session) -> list:
-        list_result = await session.list_tools()
-        tools: list = []
+    session = await _ensure_session()
+    list_result = await session.list_tools()
+    tools: list = []
 
-        for tool_def in list_result.tools:
-            tool_name = tool_def.name
-            if tool_def.description:
-                tool_description = tool_def.description
-            else:
-                tool_description = ""
+    for tool_def in list_result.tools:
+        tool_name = tool_def.name
+        tool_description = tool_def.description or ""
 
-            if tool_def.input_schema:
-                input_schema = tool_def.input_schema
-            else:
-                input_schema = {}
+        input_schema = tool_def.input_schema or {}
+        raw_properties = input_schema.get("properties", {})
+        properties = raw_properties or {}
+        raw_required = input_schema.get("required", [])
+        required = raw_required or []
 
-            raw_properties = input_schema.get("properties", {})
-            if raw_properties:
-                properties = raw_properties
-            else:
-                properties = {}
-
-            raw_required = input_schema.get("required", [])
-            if raw_required:
-                required = raw_required
-            else:
-                required = []
-            fields: dict[str, Any] = {}
-            for prop_name, prop_schema in properties.items():
-                is_required = prop_name in required
-                if is_required:
-                    default = ...
-                else:
-                    default = None
-                field_kwargs: dict[str, Any] = {"default": default}
-                desc = prop_schema.get("description", "")
-                if desc:
-                    field_kwargs["description"] = desc
-                fields[prop_name] = (
-                    _json_schema_to_pydantic_field(prop_schema),
-                    Field(**field_kwargs),
-                )
-            args_model = create_model(f"{tool_name}_args", **fields)
-
-            def _make_caller(name: str):
-                async def _call_mcp_tool(**kwargs):
-                    arguments = {k: v for k, v in kwargs.items() if v is not None}
-                    args_str = ", ".join(f"{k}={v}" for k, v in arguments.items())
-                    if arguments:
-                        msg = f"[MySQL MCP] 调用工具: {name}({args_str})"
-                    else:
-                        msg = f"[MySQL MCP] 调用工具: {name}"
-                    logger.debug(f"\033[94m{msg}\033[0m")
-
-                    async def _invoke(sess):
-                        result = await sess.call_tool(name, arguments=arguments)
-                        texts = []
-                        content_items = getattr(result, "content", None)
-                        if content_items:
-                            items = content_items
-                        else:
-                            items = []
-                        for c in items:
-                            if hasattr(c, "text") and c.text:
-                                texts.append(c.text)
-                        if texts:
-                            body = "\n".join(texts)
-                        else:
-                            body = str(result)
-                        if getattr(result, "is_error", False) or getattr(
-                            result, "isError", False
-                        ):
-                            return f"MCP 工具执行失败: {body}"
-                        return body
-
-                    return await _with_mcp_session(_invoke)
-
-                return _call_mcp_tool
-
-            tool = StructuredTool.from_function(
-                name=tool_name,
-                description=tool_description,
-                coroutine=_make_caller(tool_name),
-                args_schema=args_model,
+        fields: dict[str, Any] = {}
+        for prop_name, prop_schema in properties.items():
+            is_required = prop_name in required
+            field_kwargs: dict[str, Any] = {"default": ... if is_required else None}
+            desc = prop_schema.get("description", "")
+            if desc:
+                field_kwargs["description"] = desc
+            fields[prop_name] = (
+                _json_schema_to_pydantic_field(prop_schema),
+                Field(**field_kwargs),
             )
-            tools.append(tool)
+        args_model = create_model(f"{tool_name}_args", **fields)
 
-        return tools
+        def _make_caller(name: str):
+            async def _call_mcp_tool(**kwargs):
+                arguments = {k: v for k, v in kwargs.items() if v is not None}
+                args_str = ", ".join(f"{k}={v}" for k, v in arguments.items())
+                msg = f"[MySQL MCP] 调用工具: {name}"
+                if arguments:
+                    msg += f"({args_str})"
+                logger.debug(f"\033[94m{msg}\033[0m")
 
-    return await _with_mcp_session(_list_and_wrap)
+                try:
+                    sess = await _ensure_session()
+                except Exception:
+                    logger.debug("MCP session 获取失败，尝试重连")
+                    await _reset_session()
+                    sess = await _ensure_session()
+
+                try:
+                    result = await sess.call_tool(name, arguments=arguments)
+                except Exception:
+                    logger.debug(f"MCP call_tool 失败，重置 session 后重试")
+                    await _reset_session()
+                    sess = await _ensure_session()
+                    result = await sess.call_tool(name, arguments=arguments)
+
+                texts = []
+                content_items = getattr(result, "content", None) or []
+                for c in content_items:
+                    if hasattr(c, "text") and c.text:
+                        texts.append(c.text)
+                body = "\n".join(texts) if texts else str(result)
+
+                is_err = getattr(result, "is_error", False) or getattr(result, "isError", False)
+                if is_err:
+                    return f"MCP 工具执行失败: {body}"
+                return body
+
+            return _call_mcp_tool
+
+        tool = StructuredTool.from_function(
+            name=tool_name,
+            description=tool_description,
+            coroutine=_make_caller(tool_name),
+            args_schema=args_model,
+        )
+        tools.append(tool)
+
+    return tools
 
 
 def _is_cache_valid() -> bool:
@@ -198,34 +202,36 @@ async def get_mcp_tools(force_refresh: bool = False) -> list:
         return _cached_tools
 
     except Exception as e:
-        logger.error(f"MCP 工具刷新失败: {e}")
+        logger.debug(f"MCP 工具刷新失败（使用缓存兜底）: {e}")
         if _cached_tools:
             return _cached_tools
         raise
 
 
 async def refresh_mcp_tools_async() -> tuple[list, bool]:
-    """强制刷新 MCP 工具列表，返回 (tools, changed)。"""
+    """后台刷新 MCP 工具列表，失败时重置 session 确保下次可重连。返回 (tools, changed)。"""
     global _cached_tools, _cache_timestamp, _cache_tool_names
 
     old_names = list(_cache_tool_names)
 
     try:
         new_tools = await _discover_tools_from_server()
-        new_names = [t.name for t in new_tools]
-
-        if new_names == old_names and _cached_tools:
-            _cache_timestamp = time.time()
-            return _cached_tools, False
-
-        _cached_tools = new_tools
-        _cache_timestamp = time.time()
-        _cache_tool_names = new_names
-        return _cached_tools, True
-
     except Exception as e:
-        logger.error(f"MCP 工具后台刷新失败: {e}")
+        logger.debug(f"MCP 工具后台刷新失败（使用缓存兜底）: {e}")
+        await _reset_session()
         return _cached_tools, False
+
+    new_names = [t.name for t in new_tools]
+
+    if new_names == old_names and _cached_tools:
+        _cache_timestamp = time.time()
+        return _cached_tools, False
+
+    _cached_tools = new_tools
+    _cache_timestamp = time.time()
+    _cache_tool_names = new_names
+    logger.info(f"MCP 工具列表已更新: {new_names}")
+    return _cached_tools, True
 
 
 async def load_mcp_tools_async() -> tuple[list, AsyncExitStack]:
@@ -235,8 +241,9 @@ async def load_mcp_tools_async() -> tuple[list, AsyncExitStack]:
 
 
 async def close_mcp_cache():
-    """清空 MCP 工具缓存（短连接模式无需显式关 session）。"""
+    """清空缓存并断开持久 session。"""
     global _cached_tools, _cache_timestamp, _cache_tool_names
     _cached_tools = []
     _cache_timestamp = 0
     _cache_tool_names = []
+    await _reset_session()

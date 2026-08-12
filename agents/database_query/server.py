@@ -84,7 +84,7 @@ async def _refresh_loop():
                 )
                 logger.info(f"工具列表已热更新: {[t.name for t in mcp_tools]}")
         except Exception:
-            logger.error(f"后台刷新异常:\n{traceback.format_exc()}")
+            logger.debug(f"后台刷新跳过（MCP Server 暂不可达，缓存兜底）")
 
 
 @asynccontextmanager
