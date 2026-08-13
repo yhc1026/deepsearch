@@ -24,7 +24,6 @@ from shared.llm import model
 from shared.agent_result import ERROR, HIT, MISS, make_result
 from shared.monitor import monitor
 
-from .embedding import embed_query
 from .ingestion import ingest_text
 from .settings import HYBRID_TOP_K, QUERY_VARIANTS
 from .vector_store import vector_store

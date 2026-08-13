@@ -9,7 +9,6 @@ import asyncio
 import json
 import urllib.error
 import urllib.request
-from typing import Optional
 
 from langchain_core.tools import tool
 

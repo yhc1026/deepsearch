@@ -67,7 +67,7 @@ def list_sql_tables() -> str:
 
     # 埋点：工具一被调用，前端可以展示当前正在查询数据库表名
     monitor.report_tool(tool_name="数据库表名查询工具：list_sql_tables", args={})
-    print(f"\033[36m[数据库] 查询可用表…\033[0m")
+    print("\033[36m[数据库] 查询可用表…\033[0m")
 
     # 加载数据库连接信息
     config = get_db_config()

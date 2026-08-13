@@ -24,6 +24,7 @@ import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -45,6 +46,7 @@ from agents.orchestrator.session_db import (
     save_conversation,
     upsert_session,
 )
+from agents.orchestrator.checkpoint import CheckpointStore
 from shared.monitor import monitor
 
 project_root_path = Path(__file__).parents[2].resolve()
@@ -195,14 +197,30 @@ async def run_deep_agent(task_query: str, session_id: str):
     full_query = task_query + date_context + history_context
     last_result: str = ""
     session_files: list[dict] = []
+    checkpoint_store = CheckpointStore()
 
     try:
         # ================================================================
         # Phase 1: 规划
         # ================================================================
-        print(f"\033[36m▶ Phase 1/3: 规划 — 分析用户意图，生成 DAG 执行计划\033[0m")
-        planner = Planner()
-        plan: Plan = await planner.plan(full_query)
+        print("\033[36m▶ Phase 1/3: 规划 — 分析用户意图，生成 DAG 执行计划\033[0m")
+
+        # 同一 session + 同一 query 存在未完成断点时，跳过规划直接恢复原计划
+        resume = await checkpoint_store.load(session_id, task_query)
+        resume_state: dict[str, Any] | None = None
+        if resume is not None:
+            plan: Plan = resume["plan"]
+            resume_state = {
+                "results": resume["results"],
+                "result_codes": resume["result_codes"],
+                "batch_index": resume["batch_index"],
+            }
+            print(
+                f"\033[33m  ↺ 检测到断点，从第 {resume['batch_index'] + 2} 批恢复执行\033[0m"
+            )
+        else:
+            planner = Planner()
+            plan = await planner.plan(full_query)
 
         _print_plan(plan)
 
@@ -225,22 +243,36 @@ async def run_deep_agent(task_query: str, session_id: str):
 
         # 空计划 = LLM 判定不需要工具，直接口头回复
         if not plan.steps:
+            await checkpoint_store.clear(session_id)
             last_result = await _chat_reply(task_query)
             if last_result:
                 monitor.report_task_result(last_result)
             return
 
+        # 全新规划且非空计划时落初始断点（batch_index=-1），保证首个 batch 崩溃也能恢复
+        if resume is None:
+            await checkpoint_store.save(session_id, task_query, plan, {}, {}, -1)
+
         # ================================================================
         # Phase 2: 执行
         # ================================================================
-        print(f"\033[36m▶ Phase 2/3: 执行 — 按 DAG 拓扑顺序调用子 Agent\033[0m")
+        print("\033[36m▶ Phase 2/3: 执行 — 按 DAG 拓扑顺序调用子 Agent\033[0m")
         executor = DAGExecutor()
-        results: dict[str, str] = await executor.execute(plan)
+        results: dict[str, str] = await executor.execute(
+            plan,
+            resume_state=resume_state,
+            on_batch_done=lambda results, codes, idx: checkpoint_store.save(
+                session_id, task_query, plan, results, codes, idx
+            ),
+        )
+
+        # 执行完成即清理断点：Phase 3 汇总失败无需重跑检索步骤
+        await checkpoint_store.clear(session_id)
 
         # ================================================================
         # Phase 3: 汇总
         # ================================================================
-        print(f"\033[36m▶ Phase 3/3: 汇总 — 整合各子 Agent 结果，生成最终答案\033[0m")
+        print("\033[36m▶ Phase 3/3: 汇总 — 整合各子 Agent 结果，生成最终答案\033[0m")
         last_result = await _synthesize(task_query, plan, results)
 
         if last_result:

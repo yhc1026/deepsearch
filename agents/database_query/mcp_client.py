@@ -144,7 +144,7 @@ async def _discover_tools_from_server() -> list:
                 try:
                     result = await sess.call_tool(name, arguments=arguments)
                 except Exception:
-                    logger.debug(f"MCP call_tool 失败，重置 session 后重试")
+                    logger.debug("MCP call_tool 失败，重置 session 后重试")
                     await _reset_session()
                     sess = await _ensure_session()
                     result = await sess.call_tool(name, arguments=arguments)
@@ -232,12 +232,6 @@ async def refresh_mcp_tools_async() -> tuple[list, bool]:
     _cache_tool_names = new_names
     logger.info(f"MCP 工具列表已更新: {new_names}")
     return _cached_tools, True
-
-
-async def load_mcp_tools_async() -> tuple[list, AsyncExitStack]:
-    """首次加载 MCP 工具（兼容旧接口）。"""
-    tools = await get_mcp_tools(force_refresh=True)
-    return tools, AsyncExitStack()
 
 
 async def close_mcp_cache():

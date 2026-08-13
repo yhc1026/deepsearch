@@ -3,7 +3,7 @@ ChromaDB 向量库封装
 
 提供三个检索能力：
 1. dense_search  — 纯向量语义检索
-2. keyword_search — 基于词频的关键词检索
+2. keyword_search — 基于 BM25 的关键词检索
 3. hybrid_search  — 融合以上两者，RRF 重排序
 
 每个知识库对应一个 ChromaDB Collection。
@@ -64,18 +64,46 @@ def _tokenize(text: str) -> list[str]:
     return tokens
 
 
-def _keyword_score(query_tokens: list[str], doc_text: str) -> float:
-    """计算文档与查询关键词的 TF 分数，按文档长度归一化。"""
+# BM25 超参数
+_BM25_K1 = 1.5   # 词频饱和度
+_BM25_B = 0.75   # 文档长度归一化强度
+
+
+def _idf(df: int, n_docs: int) -> float:
+    """BM25 逆文档频率：稀有词权重高，常见词被抑制。"""
+    return math.log((n_docs - df + 0.5) / (df + 0.5) + 1.0)
+
+
+def _bm25_score(
+    query_tokens: list[str],
+    doc_tokens: list[str],
+    doc_len: int,
+    avgdl: float,
+    df: dict[str, int],
+    n_docs: int,
+) -> float:
+    """计算文档相对查询的 BM25 得分。
+
+    标准 BM25 公式：
+        Σ IDF(q) · f(q,D) · (k1+1) / (f(q,D) + k1 · (1 - b + b · |D|/avgdl))
+    """
     if not query_tokens:
         return 0.0
-    doc_lower = doc_text.lower()
+
+    # 文档词频
+    tf: dict[str, int] = {}
+    for token in doc_tokens:
+        tf[token] = tf.get(token, 0) + 1
+
     score = 0.0
-    for token in query_tokens:
-        count = doc_lower.count(token)
-        if count > 0:
-            score += math.log(1 + count)  # 对数抑制高频词
-    length_penalty = math.sqrt(max(len(doc_text), 1))
-    return score / length_penalty
+    for q in query_tokens:
+        f = tf.get(q, 0)
+        if f == 0:
+            continue
+        idf = _idf(df.get(q, 0), n_docs)
+        norm = 1.0 - _BM25_B + _BM25_B * (doc_len / avgdl)
+        score += idf * (f * (_BM25_K1 + 1.0)) / (f + _BM25_K1 * norm)
+    return score
 
 
 # ---------------------------------------------------------------------------
@@ -191,10 +219,11 @@ class VectorStore:
         query: str,
         top_k: int = 10,
     ) -> list[dict[str, Any]]:
-        """基于词频的关键词检索。
+        """基于 BM25 的关键词检索。
 
-        原理：从 Collection 中取出全部文档，按查询关键词的 TF 分数排序。
-        适合小规模知识库（< 1 万条），大规模场景建议加 BM25 索引。
+        原理：从 Collection 中取出全部文档，预计算语料统计（词频、文档频率、
+        平均文档长度）后按 BM25 分数排序。
+        适合小规模知识库（< 1 万条），大规模场景建议改用外部 BM25 索引。
         """
         try:
             collection = self._client.get_collection(name=collection_name)
@@ -203,18 +232,40 @@ class VectorStore:
 
         # ChromaDB get 默认返回全部，limit 可控制上限
         all_data = collection.get()
-        if not all_data["documents"]:
+        documents = all_data["documents"]
+        if not documents:
             return []
 
         query_tokens = _tokenize(query)
         if not query_tokens:
             return []
 
+        # 预计算语料统计：每个文档的分词、长度，以及全库文档频率
+        doc_tokens_list: list[list[str]] = []
+        doc_lengths: list[int] = []
+        df: dict[str, int] = {}
+        for doc_text in documents:
+            tokens = _tokenize(str(doc_text)) if doc_text is not None else []
+            doc_tokens_list.append(tokens)
+            doc_lengths.append(len(tokens))
+            for token in set(tokens):
+                df[token] = df.get(token, 0) + 1
+
+        n_docs = len(documents)
+        avgdl = sum(doc_lengths) / n_docs if n_docs else 0.0
+
         scored: list[tuple[float, dict[str, Any]]] = []
-        for i, doc_text in enumerate(all_data["documents"]):
+        for i, doc_text in enumerate(documents):
             if doc_text is None:
                 continue
-            score = _keyword_score(query_tokens, str(doc_text))
+            score = _bm25_score(
+                query_tokens,
+                doc_tokens_list[i],
+                doc_lengths[i],
+                avgdl,
+                df,
+                n_docs,
+            )
             if score > 0:
                 meta = (all_data["metadatas"] or [{}])[i] if i < len(all_data["metadatas"] or []) else {}
                 scored.append((

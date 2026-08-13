@@ -140,6 +140,6 @@ def ingest_directory(
         try:
             count = ingest_file(str(file_path_obj), collection_name)
             stats[file_path_obj.name] = count
-        except Exception as e:
+        except Exception:
             stats[file_path_obj.name] = -1  # 标记失败
     return stats

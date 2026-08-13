@@ -96,7 +96,11 @@
       "Bash(uv venv *)",
       "Bash(.venv/Scripts/python.exe -c \"import sys; print\\('Python:', sys.executable\\); print\\('prefix:', sys.prefix\\); import ragflow_sdk; print\\('ragflow_sdk OK'\\)\")",
       "Bash(.venv/Scripts/python.exe)",
-      "Bash(.venv/Scripts/python.exe -c ' *)"
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(uv add *)",
+      "Bash(pip show *)",
+      "Bash(uv --version)",
+      "Bash(uv lock *)"
     ]
   }
 }

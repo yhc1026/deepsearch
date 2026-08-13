@@ -150,7 +150,7 @@ def _build_input_schema(params: list[dict]) -> dict:
 
 
 def _list_tables_text() -> str:
-    logger.debug(f"\033[94m查询数据库表名: SHOW TABLES\033[0m")
+    logger.debug("\033[94m查询数据库表名: SHOW TABLES\033[0m")
     result = _execute_sql("SHOW TABLES")
     if result.startswith("查询异常"):
         return result

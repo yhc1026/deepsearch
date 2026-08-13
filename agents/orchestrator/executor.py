@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 CYAN = "\033[36m"
 RESET = "\033[0m"
@@ -27,7 +27,7 @@ from shared.llm import model
 from agents.orchestrator.planner import Plan, PlanStep
 from agents.orchestrator.context import get_session_context
 from shared.monitor import monitor
-from shared.agent_result import ERROR, HIT, MISS, needs_fallback, parse_result
+from shared.agent_result import ERROR, HIT, needs_fallback, parse_result
 
 # =============================================================================
 # 工具注册表
@@ -151,23 +151,50 @@ class DAGExecutor:
     # 公共入口
     # ------------------------------------------------------------------
 
-    async def execute(self, plan: Plan) -> dict[str, str]:
-        """执行整个计划，返回 {step_id: result_string}。"""
+    async def execute(
+        self,
+        plan: Plan,
+        resume_state: dict[str, Any] | None = None,
+        on_batch_done: Callable[[dict[str, str], dict[str, str], int], Awaitable[None]] | None = None,
+    ) -> dict[str, str]:
+        """执行整个计划，返回 {step_id: result_string}。
+
+        resume_state: 断点恢复的初始状态 {"results", "result_codes", "batch_index"}，
+                      从 batch_index+1 开始继续执行。
+        on_batch_done: 每个 batch 完成后回调 (results, result_codes, batch_index)，
+                      用于将执行进度落 checkpoint（异步，会被 await）。
+        """
         if not plan.steps:
             return {}
 
         batches = self._topological_batches(plan)
+
         results: dict[str, str] = {}
         result_codes: dict[str, str] = {}
+        start_batch = 0
+        if resume_state:
+            results = dict(resume_state.get("results") or {})
+            result_codes = dict(resume_state.get("result_codes") or {})
+            start_batch = int(resume_state.get("batch_index", -1)) + 1
 
-        logger.info(f"计划共 {len(plan.steps)} 步，分 {len(batches)} 批执行")
+        logger.info(
+            f"计划共 {len(plan.steps)} 步，分 {len(batches)} 批执行"
+            + (f"，从第 {start_batch + 1} 批恢复" if start_batch else "")
+        )
         monitor._emit(
             "plan_start",
-            f"开始执行计划，共 {len(plan.steps)} 步",
-            {"goal": plan.goal, "total_steps": len(plan.steps), "batches": len(batches)},
+            f"开始执行计划，共 {len(plan.steps)} 步"
+            + (f"（从第 {start_batch + 1} 批恢复）" if start_batch else ""),
+            {
+                "goal": plan.goal,
+                "total_steps": len(plan.steps),
+                "batches": len(batches),
+                "resume_from": start_batch,
+            },
         )
 
-        for batch_idx, batch in enumerate(batches):
+        for batch_idx in range(start_batch, len(batches)):
+            batch = batches[batch_idx]
             batch_ids = [s.id for s in batch]
             logger.info(f"批次 {batch_idx + 1}/{len(batches)}: {batch_ids}")
 
@@ -219,6 +246,9 @@ class DAGExecutor:
                     logger.info(
                         f"步骤 {step.id} 完成 code={code} ({len(content)} 字符)"
                     )
+
+            if on_batch_done:
+                await on_batch_done(results, result_codes, batch_idx)
 
         monitor._emit(
             "plan_complete",
