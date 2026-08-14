@@ -76,7 +76,7 @@ def create_ask_delete(chat_name, question) -> str:
         else:
             question_suffix = ""
         print(
-            f"\033[36m[RAGFlow] 向「{chat_name}」提问: "
+            f"\033[37m[RAGFlow] 向「{chat_name}」提问: "
             f"{question[:120]}{question_suffix}\033[0m"
         )
 
@@ -109,7 +109,7 @@ def create_ask_delete(chat_name, question) -> str:
                     result += answer
 
         use_chat.delete_sessions(ids=[session.id])
-        print(f"\033[36m[RAGFlow] 检索结果 ({len(result)} 字符):\n{result}\033[0m")
+        print(f"\033[37m[RAGFlow] 检索结果 ({len(result)} 字符):\n{result}\033[0m")
 
         if not result or not result.strip():
             return make_result(MISS, "知识库未返回任何内容")

@@ -107,6 +107,10 @@ textarea {
 }
 
 .sidebar-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
@@ -137,8 +141,11 @@ textarea {
 
 .session-list {
   display: grid;
-  gap: 4px;
-  max-height: calc(100dvh - 220px);
+  align-content: start;
+  grid-auto-rows: max-content;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -153,20 +160,24 @@ textarea {
   position: relative;
   display: grid;
   gap: 2px;
-  border: 1px solid transparent;
+  border: 1px solid var(--line);
   border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
   cursor: pointer;
   padding: 8px 10px;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 
 .session-item:hover {
   background: var(--surface-hover);
+  border-color: var(--line-accent);
 }
 
 .session-item--active {
   border-color: var(--blue-soft);
   background: var(--blue-light);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.08);
 }
 
 .session-item-title {
@@ -1073,4 +1084,123 @@ textarea {
     transition-duration: 1ms !important;
     animation-duration: 1ms !important;
   }
+}
+
+/* ── Login ── */
+
+.login-shell {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg-secondary);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 32px 28px;
+  box-shadow: var(--shadow-md);
+}
+
+.login-brand {
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--blue);
+  text-align: center;
+  margin-bottom: 4px;
+}
+
+.login-title {
+  text-align: center;
+  margin-top: 4px !important;
+  margin-bottom: 4px !important;
+}
+
+.login-subtitle {
+  text-align: center;
+  margin-bottom: 24px !important;
+}
+
+.login-switch {
+  margin-top: 16px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.login-switch a {
+  margin-left: 4px;
+  color: var(--blue);
+  cursor: pointer;
+}
+
+/* ── Sidebar footer / user ── */
+
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 10px 12px;
+}
+
+.sidebar-footer-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sidebar-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--blue-light);
+  color: var(--blue);
+  font-size: 14px;
+  font-weight: 700;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+.sidebar-footer-meta {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.sidebar-footer-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-footer-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sidebar-logout {
+  color: var(--muted) !important;
+}
+
+.sidebar-logout:hover {
+  color: var(--red) !important;
+  background: var(--red-light) !important;
 }

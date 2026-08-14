@@ -28,7 +28,7 @@ function extractString(data: Record<string, unknown>, key: string): string | nul
   return typeof value === "string" ? value : null;
 }
 
-export function useDeepAgentSession() {
+export function useDeepAgentSession(userId: number | null = null) {
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
   const heartbeatTimerRef = useRef<number | undefined>(undefined);
@@ -50,12 +50,12 @@ export function useDeepAgentSession() {
 
   const loadSessionsList = useCallback(async () => {
     try {
-      const response = await listSessions();
+      const response = await listSessions(userId);
       setSessions(response.sessions || []);
     } catch {
       // 历史列表加载失败时静默处理，不影响主功能
     }
-  }, []);
+  }, [userId]);
 
   const loadSession = useCallback(
     async (targetThreadId: string): Promise<ChatTurn[]> => {
@@ -298,7 +298,7 @@ export function useDeepAgentSession() {
       setResult("");
       setLastError("");
       try {
-        const response = await startTask(cleanQuery, threadId);
+        const response = await startTask(cleanQuery, threadId, userId);
         if (response.thread_id && response.thread_id !== threadId) {
           storeThreadId(response.thread_id);
           setThreadId(response.thread_id);
@@ -310,7 +310,7 @@ export function useDeepAgentSession() {
         throw error;
       }
     },
-    [threadId]
+    [threadId, userId]
   );
 
   const cancelCurrentTask = useCallback(async () => {

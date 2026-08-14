@@ -23,6 +23,7 @@ export interface ChatTurn {
 interface ConversationThreadProps {
   onUseExample: (prompt: string) => void;
   turns: ChatTurn[];
+  username: string;
 }
 
 function formatTime(value: string): string {
@@ -166,11 +167,12 @@ function AssistantMessage({
 export function ConversationThread({
   onUseExample,
   turns,
+  username,
 }: ConversationThreadProps) {
   if (turns.length === 0) {
     return (
       <div className="welcome-empty">
-        <p>欢迎，yhc1026。请在输入框中开启本段对话</p>
+        <p>欢迎，{username}</p>
       </div>
     );
   }

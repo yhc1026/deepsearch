@@ -19,6 +19,7 @@ service = A2AAgentService(
     tools=[get_assistant_list, create_ask_delete],
     system_prompt=ragflow_config["system_prompt"],
     skills_dir=ragflow_config.get("skills_dir"),
+    base_url="http://localhost:8003",
 )
 
 service.create_agent()

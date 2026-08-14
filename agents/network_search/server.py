@@ -19,6 +19,7 @@ service = A2AAgentService(
     tools=[internet_search],
     system_prompt=tavily_config["system_prompt"],
     skills_dir=tavily_config.get("skills_dir"),
+    base_url="http://localhost:8001",
 )
 
 service.create_agent()

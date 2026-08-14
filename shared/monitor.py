@@ -53,6 +53,7 @@ class ToolMonitor:
         event_type: str,
         message: str,
         data: Optional[dict[str, Any]] = None,
+        log_to_console: bool = True,
     ) -> None:
         """
         构造统一监控事件，并尝试推送到当前 thread_id 对应的前端连接
@@ -91,7 +92,7 @@ class ToolMonitor:
                 pass
 
         # 控制台保底输出（高频流式事件不打印，避免刷屏）
-        if event_type not in ("llm_stream", "llm_stream_done"):
+        if log_to_console and event_type not in ("llm_stream", "llm_stream_done"):
             logger.info(f"[{event_type}] {message}")
 
     def _send_to_websocket(
@@ -147,7 +148,7 @@ class ToolMonitor:
 
     def report_task_cancelled(self) -> None:
         """报告任务已被用户取消"""
-        self._emit("task_cancelled", "任务已取消")
+        self._emit("task_cancelled", "任务已取消", log_to_console=False)
 
     def stream_chunk(self, chunk: str) -> None:
         """推送 LLM 流式输出的单个文本块到前端。
@@ -176,7 +177,7 @@ class ToolMonitor:
 
     def report_session_dir(self, path: str) -> None:
         """报告当前任务工作目录"""
-        self._emit("session_created", f"工作目录已创建: {path}", {"path": path})
+        self._emit("session_created", f"工作目录已创建: {path}", {"path": path}, log_to_console=False)
 
 
 monitor = ToolMonitor()
@@ -198,19 +199,19 @@ class ConnectionManager:
         """绑定 FastAPI 主事件循环，并同步注册到 monitor"""
         self.loop = loop
         monitor.set_websocket_manager(self)
-        logger.info(f"ConnectionManager manually bound to loop: {id(self.loop)}")
+        logger.debug(f"ConnectionManager manually bound to loop: {id(self.loop)}")
 
     async def connect(self, websocket: WebSocket, thread_id: str) -> None:
         """接受 WebSocket 连接，并按 thread_id 保存"""
         await websocket.accept()
         self.active_connections[thread_id] = websocket
-        logger.info(f"Client connected: {thread_id}")
+        logger.debug(f"Client connected: {thread_id}")
 
     def disconnect(self, websocket: WebSocket, thread_id: str) -> None:
         """移除已经断开的 WebSocket 连接"""
         if self.active_connections.get(thread_id) is websocket:
             del self.active_connections[thread_id]
-            logger.info(f"Client disconnected: {thread_id}")
+            logger.debug(f"Client disconnected: {thread_id}")
         else:
             logger.warning(f"Stale websocket disconnected, current connection kept: {thread_id}")
 

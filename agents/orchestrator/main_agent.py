@@ -47,6 +47,8 @@ from agents.orchestrator.session_db import (
     upsert_session,
 )
 from agents.orchestrator.checkpoint import CheckpointStore
+from agents.orchestrator.memory_client import recall_memories, schedule_memory_extraction
+from shared.agent_result import HIT
 from shared.monitor import monitor
 
 project_root_path = Path(__file__).parents[2].resolve()
@@ -118,14 +120,16 @@ def _topo_label(plan: Plan) -> list[list]:
 # =============================================================================
 
 
-async def run_deep_agent(task_query: str, session_id: str):
+async def run_deep_agent(task_query: str, session_id: str, user_id: int | None = None):
     """三阶段流水线执行主智能体任务。
 
     Phase 1: 规划 → Planner 将用户请求转换为结构化 DAG 计划
     Phase 2: 执行 → Executor 按拓扑顺序分批调度子 Agent
     Phase 3: 汇总 → LLM 整合结果生成最终交付物
+
+    结束后 fire-and-forget 调度一次长期记忆提取（按 user_id 隔离）。
     """
-    logger.info(f"开始执行会话，session_id={session_id}")
+    logger.info("主智能体开始进行回复")
 
     # ---- 准备会话工作目录 ----
     session_dir = project_root_path / "output" / f"session_{session_id}"
@@ -194,16 +198,33 @@ async def run_deep_agent(task_query: str, session_id: str):
     except Exception:
         logger.warning("加载历史上下文失败", exc_info=True)
 
-    full_query = task_query + date_context + history_context
+    # ---- 长期记忆召回：硬编码强制，同步调用，命中则注入主智能体 prompt ----
+    recall_context = ""
+    if user_id is not None:
+        try:
+            recall_code, recall_content = await recall_memories(
+                user_id, session_id, task_query
+            )
+            if recall_code == HIT and recall_content:
+                recall_context = (
+                    "\n[用户长期记忆]\n"
+                    + recall_content
+                    + "\n请结合以上关于该用户的长期记忆进行回答。"
+                )
+        except Exception:
+            logger.warning("长期记忆召回失败", exc_info=True)
+
+    full_query = task_query + date_context + history_context + recall_context
     last_result: str = ""
     session_files: list[dict] = []
     checkpoint_store = CheckpointStore()
+    turn_index: int = 0
 
     try:
         # ================================================================
         # Phase 1: 规划
         # ================================================================
-        print("\033[36m▶ Phase 1/3: 规划 — 分析用户意图，生成 DAG 执行计划\033[0m")
+        print("\033[37m▶ Phase 1/3: 规划 — 分析用户意图，生成 DAG 执行计划\033[0m")
 
         # 同一 session + 同一 query 存在未完成断点时，跳过规划直接恢复原计划
         resume = await checkpoint_store.load(session_id, task_query)
@@ -256,7 +277,7 @@ async def run_deep_agent(task_query: str, session_id: str):
         # ================================================================
         # Phase 2: 执行
         # ================================================================
-        print("\033[36m▶ Phase 2/3: 执行 — 按 DAG 拓扑顺序调用子 Agent\033[0m")
+        print("\033[37m▶ Phase 2/3: 执行 — 按 DAG 拓扑顺序调用子 Agent\033[0m")
         executor = DAGExecutor()
         results: dict[str, str] = await executor.execute(
             plan,
@@ -272,7 +293,7 @@ async def run_deep_agent(task_query: str, session_id: str):
         # ================================================================
         # Phase 3: 汇总
         # ================================================================
-        print("\033[36m▶ Phase 3/3: 汇总 — 整合各子 Agent 结果，生成最终答案\033[0m")
+        print("\033[37m▶ Phase 3/3: 汇总 — 整合各子 Agent 结果，生成最终答案\033[0m")
         last_result = await _synthesize(task_query, plan, results)
 
         if last_result:
@@ -301,11 +322,18 @@ async def run_deep_agent(task_query: str, session_id: str):
         # ---- 持久化对话记录 ----
         if last_result:
             try:
-                upsert_session(session_id, task_query[:50])
-                save_conversation(session_id, task_query, last_result, session_files)
+                upsert_session(session_id, task_query[:50], user_id)
+                turn_index = save_conversation(
+                    session_id, task_query, last_result, session_files, user_id
+                )
                 finish_turn(session_id)
             except Exception:
                 logger.warning("保存对话记录失败", exc_info=True)
+
+        # ---- 长期记忆提取：硬编码强制，末尾异步 fire-and-forget ----
+        schedule_memory_extraction(
+            user_id, session_id, turn_index, task_query, last_result
+        )
 
         reset_session_context(session_dir_token, session_id_token)
 

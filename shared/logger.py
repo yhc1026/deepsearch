@@ -8,7 +8,7 @@ import os
 import sys
 
 
-def setup_logging(level: int | str | None = None) -> None:
+def setup_logging(level: int | str | None = None, log_startup: bool = True) -> None:
     """统一配置 root logger，所有模块通过 logging.getLogger(__name__) 继承。
 
     特性：
@@ -29,18 +29,19 @@ def setup_logging(level: int | str | None = None) -> None:
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(level)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-            datefmt="%H:%M:%S",
-        )
-    )
+    fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    service_name = os.getenv("DEEPSEARCH_SERVICE_NAME")
+    if service_name:
+        fmt = f"[{service_name}] {fmt}"
+    handler.setFormatter(logging.Formatter(fmt, datefmt="%H:%M:%S"))
 
     root = logging.getLogger()
     root.setLevel(level)
     # 避免重复添加 handler（start_services.py 多进程场景）
     if not root.handlers:
         root.addHandler(handler)
+        if log_startup and service_name:
+            logging.getLogger(__name__).info("启动成功")
 
     # 关闭第三方库的 INFO 日志，报错时才输出
     for noisy in (

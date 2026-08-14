@@ -115,7 +115,7 @@ def search_knowledge_base(
     try:
         # Step 1: 生成多查询变体
         variants = _generate_query_variants(query, n=QUERY_VARIANTS)
-        print(f"\033[36m[VectorSearch] 多路查询变体 ({len(variants)}):\033[0m")
+        print(f"\033[37m[VectorSearch] 多路查询变体 ({len(variants)}):\033[0m")
         for vi, v in enumerate(variants):
             print(f"  {vi + 1}. {v[:100]}")
 
@@ -150,7 +150,7 @@ def search_knowledge_base(
 
         result_text = f"从知识库「{collection}」检索到 {len(merged)} 条相关结果（{len(variants)}路召回）：\n\n" + "\n\n---\n\n".join(items)
 
-        print(f"\033[36m[VectorSearch] 检索完成: {len(merged)} 条结果\033[0m")
+        print(f"\033[37m[VectorSearch] 检索完成: {len(merged)} 条结果\033[0m")
         return make_result(HIT, result_text)
 
     except Exception as e:

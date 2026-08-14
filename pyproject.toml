@@ -27,6 +27,7 @@ dependencies = [
     "typing-extensions>=4.5.0",
     "uvicorn[standard]>=0.20.0",
     "aiosqlite>=0.22.1",
+    "a2a-sdk>=1.1.2",
 ]
 
 [project.optional-dependencies]

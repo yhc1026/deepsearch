@@ -16,7 +16,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
-CYAN = "\033[36m"
+WHITE = "\033[37m"
 RESET = "\033[0m"
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -207,7 +207,7 @@ class DAGExecutor:
                             f"跳过兜底步骤 {step.id}（{step.fallback_for} code={target_code}）"
                         )
                         print(
-                            f"{CYAN}  ⊘ 跳过 {step.tool} — {step.description}"
+                            f"{WHITE}  ⊘ 跳过 {step.tool} — {step.description}"
                             f"（{step.fallback_for} code={target_code}）{RESET}"
                         )
                         results[step.id] = (
@@ -216,11 +216,11 @@ class DAGExecutor:
                         result_codes[step.id] = HIT
                         continue
                     print(
-                        f"{CYAN}  → 调用 {step.tool} — {step.description}"
+                        f"{WHITE}  → 调用 {step.tool} — {step.description}"
                         f" [兜底: {step.fallback_for} code={target_code}]{RESET}"
                     )
                 else:
-                    print(f"{CYAN}  → 调用 {step.tool} — {step.description}{RESET}")
+                    print(f"{WHITE}  → 调用 {step.tool} — {step.description}{RESET}")
                 active_steps.append(step)
 
             if not active_steps:

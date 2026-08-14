@@ -110,6 +110,16 @@ def _bm25_score(
 # VectorStore
 # ---------------------------------------------------------------------------
 
+def _clean_metadata(meta: dict[str, Any]) -> dict[str, str | int | float | bool]:
+    """清洗 metadata：ChromaDB 只接受 str/int/float/bool 值。"""
+    clean: dict[str, str | int | float | bool] = {}
+    for k, v in meta.items():
+        if isinstance(v, (str, int, float, bool)):
+            clean[k] = v
+        else:
+            clean[k] = str(v)
+    return clean
+
 class VectorStore:
     """ChromaDB 向量存储与混合检索。
 
@@ -174,20 +184,72 @@ class VectorStore:
             f"{collection_name}_{i}_{hash(t[:40])}"
             for i, t in enumerate(texts)
         ]
-        metadatas = []
-        for c in chunks:
-            meta = c.get("metadata") or {}
-            # ChromaDB 要求 metadata 值为 str/int/float/bool
-            clean_meta: dict[str, str | int | float | bool] = {}
-            for k, v in meta.items():
-                if isinstance(v, (str, int, float, bool)):
-                    clean_meta[k] = v
-                else:
-                    clean_meta[k] = str(v)
-            metadatas.append(clean_meta)
+        metadatas = [_clean_metadata(c.get("metadata") or {}) for c in chunks]
 
         collection.add(ids=ids, embeddings=vectors, documents=texts, metadatas=metadatas)
         return len(chunks)
+
+    def upsert_chunks(
+        self,
+        collection_name: str,
+        chunks: list[dict[str, Any]],
+    ) -> int:
+        """按稳定 id 写入/覆盖文档块（用于长期记忆更新）。
+
+        每个 chunk 格式: {"id": str, "text": str, "metadata": dict | None}
+        id 相同则覆盖原块，否则新增。返回处理的块数量。
+        """
+        if not chunks:
+            return 0
+
+        collection = self.get_or_create_collection(collection_name)
+        ids = [c["id"] for c in chunks]
+        texts = [c["text"] for c in chunks]
+        vectors = embed(texts)
+        metadatas = [_clean_metadata(c.get("metadata") or {}) for c in chunks]
+
+        collection.upsert(
+            ids=ids, embeddings=vectors, documents=texts, metadatas=metadatas
+        )
+        return len(chunks)
+
+    def delete_chunks(self, collection_name: str, ids: list[str]) -> int:
+        """按 id 删除文档块。返回删除数量（ChromaDB 不返回计数时按请求 id 数）。"""
+        if not ids:
+            return 0
+        try:
+            collection = self._client.get_collection(name=collection_name)
+        except Exception:
+            return 0
+        collection.delete(ids=ids)
+        return len(ids)
+
+    def get_chunks(
+        self,
+        collection_name: str,
+        where: dict | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """按条件读取文档块（含 id/text/metadata）。"""
+        try:
+            collection = self._client.get_collection(name=collection_name)
+        except Exception:
+            return []
+        kwargs: dict[str, Any] = {"where": where}
+        if limit is not None:
+            kwargs["limit"] = limit
+        data = collection.get(**kwargs)
+        ids = data.get("ids") or []
+        docs = data.get("documents") or []
+        metas = data.get("metadatas") or []
+        result: list[dict[str, Any]] = []
+        for i in range(len(ids)):
+            result.append({
+                "id": ids[i] if i < len(ids) else "",
+                "text": docs[i] if i < len(docs) else "",
+                "metadata": metas[i] if i < len(metas) else {},
+            })
+        return result
 
     # ------------------------------------------------------------------
     # 向量检索
@@ -198,15 +260,18 @@ class VectorStore:
         collection_name: str,
         query: str,
         top_k: int = 10,
+        where: dict | None = None,
     ) -> list[dict[str, Any]]:
-        """纯向量语义检索。"""
+        """纯向量语义检索。可选 where 过滤（ChromaDB 语法，如 {"user_id": "3"}）。"""
         try:
             collection = self._client.get_collection(name=collection_name)
         except Exception:
             return []
 
         query_vec = embed_query(query)
-        results = collection.query(query_embeddings=[query_vec], n_results=top_k)
+        results = collection.query(
+            query_embeddings=[query_vec], n_results=top_k, where=where
+        )
         return _flatten_chroma_results(results)
 
     # ------------------------------------------------------------------
@@ -218,11 +283,12 @@ class VectorStore:
         collection_name: str,
         query: str,
         top_k: int = 10,
+        where: dict | None = None,
     ) -> list[dict[str, Any]]:
         """基于 BM25 的关键词检索。
 
-        原理：从 Collection 中取出全部文档，预计算语料统计（词频、文档频率、
-        平均文档长度）后按 BM25 分数排序。
+        原理：从 Collection 中取出文档（可按 where 过滤），预计算语料统计
+        （词频、文档频率、平均文档长度）后按 BM25 分数排序。
         适合小规模知识库（< 1 万条），大规模场景建议改用外部 BM25 索引。
         """
         try:
@@ -231,7 +297,7 @@ class VectorStore:
             return []
 
         # ChromaDB get 默认返回全部，limit 可控制上限
-        all_data = collection.get()
+        all_data = collection.get(where=where)
         documents = all_data["documents"]
         if not documents:
             return []
@@ -291,14 +357,15 @@ class VectorStore:
         collection_name: str,
         query: str,
         top_k: int = 10,
+        where: dict | None = None,
     ) -> list[dict[str, Any]]:
         """混合检索：向量语义 + 关键词匹配，RRF 融合排序。
 
         并行执行两种检索，然后用 Reciprocal Rank Fusion 合并结果，
         同时利用语义理解和精确关键词匹配的优势。
         """
-        dense_results = self.dense_search(collection_name, query, top_k=top_k * 2)
-        keyword_results = self.keyword_search(collection_name, query, top_k=top_k * 2)
+        dense_results = self.dense_search(collection_name, query, top_k=top_k * 2, where=where)
+        keyword_results = self.keyword_search(collection_name, query, top_k=top_k * 2, where=where)
 
         # RRF 融合
         merged: dict[str, dict[str, Any]] = {}

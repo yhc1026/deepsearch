@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 # 加载本 agent 的 prompt 模板
 _prompts = load_yaml(Path(__file__).resolve().parent / "prompts.yml")
 
+# 扫描间隔：启动时立即执行一次，之后每 24 小时扫描一次
+SCAN_INTERVAL_SECONDS = 24 * 60 * 60
+
 
 def _get_db_config() -> dict:
     config = {
@@ -177,9 +180,9 @@ async def _process_session(db_config: dict, session: dict) -> int:
 
 
 async def _run_loop() -> None:
-    """主循环：每 10 秒扫描一次需要概括的会话。"""
+    """主循环：启动时立即扫描一次，之后每 24 小时扫描一次。"""
     db_config = _get_db_config()
-    logger.info("异步摘要 Agent 启动，扫描间隔 10s")
+    logger.info("异步摘要 Agent 启动，扫描间隔 24h")
 
     while True:
         try:
@@ -207,7 +210,7 @@ async def _run_loop() -> None:
         except Exception:
             logger.warning("扫描会话失败", exc_info=True)
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(SCAN_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":

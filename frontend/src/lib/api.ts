@@ -1,5 +1,6 @@
 import { API_BASE_URL } from "./config";
 import type {
+  AuthResponse,
   CancelTaskResponse,
   ConversationsResponse,
   DeleteSessionResponse,
@@ -31,7 +32,11 @@ async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit): Pro
   return payload as T;
 }
 
-export async function startTask(query: string, threadId: string): Promise<TaskResponse> {
+export async function startTask(
+  query: string,
+  threadId: string,
+  userId?: number | null
+): Promise<TaskResponse> {
   return requestJson<TaskResponse>(apiUrl("/api/task"), {
     method: "POST",
     headers: {
@@ -39,8 +44,25 @@ export async function startTask(query: string, threadId: string): Promise<TaskRe
     },
     body: JSON.stringify({
       query,
-      thread_id: threadId
+      thread_id: threadId,
+      user_id: userId ?? null
     })
+  });
+}
+
+export async function login(username: string, password: string): Promise<AuthResponse> {
+  return requestJson<AuthResponse>(apiUrl("/api/auth/login"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password })
+  });
+}
+
+export async function register(username: string, password: string): Promise<AuthResponse> {
+  return requestJson<AuthResponse>(apiUrl("/api/auth/register"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password })
   });
 }
 
@@ -76,8 +98,12 @@ export function getDownloadUrl(path: string): string {
   return url.toString();
 }
 
-export async function listSessions(): Promise<SessionsResponse> {
-  return requestJson<SessionsResponse>(apiUrl("/api/sessions"));
+export async function listSessions(userId?: number | null): Promise<SessionsResponse> {
+  const url = new URL(apiUrl("/api/sessions"));
+  if (userId != null) {
+    url.searchParams.set("user_id", String(userId));
+  }
+  return requestJson<SessionsResponse>(url);
 }
 
 export async function getSessionConversations(

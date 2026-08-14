@@ -30,6 +30,7 @@ from pydantic import BaseModel
 
 from agents.orchestrator.main_agent import run_deep_agent
 from agents.orchestrator.session_db import delete_session, get_conversations, list_sessions
+from agents.orchestrator.auth import login, register
 from shared.monitor import manager
 from shared.logger import setup_logging
 
@@ -46,7 +47,7 @@ async def lifespan(_app: FastAPI):
     setup_logging()
     loop = asyncio.get_running_loop()
     manager.set_loop(loop)
-    logger.info(f"WebSocket Manager bound to loop: {id(loop)}")
+    logger.debug(f"WebSocket Manager bound to loop: {id(loop)}")
     yield
 
 
@@ -82,6 +83,14 @@ class TaskRequest(BaseModel):
 
     query: str
     thread_id: str = None
+    user_id: int | None = None
+
+
+class AuthRequest(BaseModel):
+    """登录/注册请求体。"""
+
+    username: str
+    password: str
 
 
 def _forget_task(thread_id: str, task: asyncio.Task) -> None:
@@ -114,7 +123,7 @@ async def run_task(request: TaskRequest):
         old_task.cancel()
 
     # create_task 把长耗时 Agent 执行交给事件循环，接口本身不用等待最终结果
-    task = asyncio.create_task(run_deep_agent(request.query, thread_id))
+    task = asyncio.create_task(run_deep_agent(request.query, thread_id, user_id=request.user_id))
     active_tasks[thread_id] = task
     def _on_task_done(finished_task: asyncio.Task) -> None:
         _forget_task(thread_id, finished_task)
@@ -277,14 +286,37 @@ async def list_files(path: str):
 
 
 @app.get("/api/sessions")
-async def get_sessions():
-    """返回所有历史会话列表，按更新时间倒序。"""
+async def get_sessions(user_id: int | None = None):
+    """返回历史会话列表，按更新时间倒序。传入 user_id 时只返回该用户的会话。"""
     try:
-        sessions = list_sessions()
+        sessions = list_sessions(user_id)
         return {"sessions": sessions}
     except Exception as e:
         logger.error(f"获取会话列表失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/auth/register")
+async def register_user(request: AuthRequest):
+    """注册新用户，成功返回 user_id。用户名重复返回 409。"""
+    try:
+        result = register(request.username, request.password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if result is None:
+        raise HTTPException(status_code=409, detail="用户名已存在")
+    user_id, username = result
+    return {"user_id": user_id, "username": username}
+
+
+@app.post("/api/auth/login")
+async def login_user(request: AuthRequest):
+    """登录，成功返回 user_id。用户名或密码错误返回 401。"""
+    result = login(request.username, request.password)
+    if result is None:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    user_id, username = result
+    return {"user_id": user_id, "username": username}
 
 
 @app.get("/api/sessions/{thread_id}/conversations")
@@ -327,7 +359,7 @@ async def websocket_endpoint(websocket: WebSocket, thread_id: str):
     发送事件时只需要按 thread_id 查找连接，就能把进度推给对应页面。循环中的
     receive_text 用于接收前端心跳，避免连接空闲断开。
     """
-    logger.info(f"WebSocket 连接请求: {thread_id}")
+    logger.debug(f"WebSocket 连接请求: {thread_id}")
 
     # 连接建立后立即按 thread_id 注册，monitor 后续才能把事件定向推给当前页面
     await manager.connect(websocket, thread_id)
@@ -343,7 +375,7 @@ async def websocket_endpoint(websocket: WebSocket, thread_id: str):
     except WebSocketDisconnect:
         # 只移除当前 WebSocket 实例，避免旧连接断开时误删同 thread_id 的新连接
         manager.disconnect(websocket, thread_id)
-        logger.info(f"客户端已断开: {thread_id}")
+        logger.debug(f"客户端已断开: {thread_id}")
 
     except Exception as e:
         logger.error(f"连接异常: {e}")

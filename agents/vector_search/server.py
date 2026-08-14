@@ -23,6 +23,7 @@ service = A2AAgentService(
     tools=[search_knowledge_base, list_collections, ingest_document],
     system_prompt=vector_config["system_prompt"],
     skills_dir=vector_config.get("skills_dir"),
+    base_url="http://localhost:8004",
 )
 
 service.create_agent()

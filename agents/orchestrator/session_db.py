@@ -36,15 +36,16 @@ def _get_db_config() -> dict:
     return config
 
 
-def upsert_session(thread_id: str, title: str) -> int:
+def upsert_session(thread_id: str, title: str, user_id: int | None = None) -> int:
     """创建或更新会话，返回 sessions.id。首次创建时 title 使用首轮 query 截断。"""
     config = _get_db_config()
     with mysql.connector.connect(**config) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO sessions (thread_id, title) VALUES (%s, %s)"
-                " ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP, title = VALUES(title)",
-                (thread_id, title[:200]),
+                "INSERT INTO sessions (thread_id, title, user_id) VALUES (%s, %s, %s)"
+                " ON DUPLICATE KEY UPDATE updated_at = CURRENT_TIMESTAMP,"
+                " title = VALUES(title), user_id = COALESCE(VALUES(user_id), user_id)",
+                (thread_id, title[:200], user_id),
             )
             cur.execute("SELECT id FROM sessions WHERE thread_id = %s", (thread_id,))
             row = cur.fetchone()
@@ -68,15 +69,16 @@ def save_conversation(
     user_query: str,
     assistant_result: str,
     files: list[dict] | None = None,
+    user_id: int | None = None,
 ) -> int:
-    """保存一轮对话，自动计算 turn_index。返回 conversations.id。"""
+    """保存一轮对话，自动计算 turn_index。返回本轮 turn_index。"""
     config = _get_db_config()
     with mysql.connector.connect(**config) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM sessions WHERE thread_id = %s", (thread_id,))
             session_row = cur.fetchone()
             if not session_row:
-                session_id = upsert_session(thread_id, user_query[:50])
+                session_id = upsert_session(thread_id, user_query[:50], user_id)
             else:
                 session_id = session_row[0]
 
@@ -94,19 +96,27 @@ def save_conversation(
                 " VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (session_id, next_index, user_query, assistant_result, files_json, now, now),
             )
-            return cur.lastrowid or 0
+            return next_index
 
 
-def list_sessions() -> list[dict]:
-    """返回所有会话摘要，按更新时间倒序。"""
+def list_sessions(user_id: int | None = None) -> list[dict]:
+    """返回会话摘要，按更新时间倒序。传入 user_id 时只返回该用户的会话。"""
     config = _get_db_config()
     with mysql.connector.connect(**config) as conn:
         with conn.cursor(dictionary=True) as cur:
-            cur.execute(
-                "SELECT id, thread_id, title, status, turn_count,"
-                " DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%S') AS updated_at"
-                " FROM sessions ORDER BY updated_at DESC"
-            )
+            if user_id is not None:
+                cur.execute(
+                    "SELECT id, thread_id, title, status, turn_count,"
+                    " DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%S') AS updated_at"
+                    " FROM sessions WHERE user_id = %s ORDER BY updated_at DESC",
+                    (user_id,),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, thread_id, title, status, turn_count,"
+                    " DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%S') AS updated_at"
+                    " FROM sessions ORDER BY updated_at DESC"
+                )
             return cur.fetchall() or []
 
 

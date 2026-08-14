@@ -58,7 +58,7 @@ def internet_search(
         query_suffix = "…"
     else:
         query_suffix = ""
-    print(f"\033[36m[网络搜索] 关键词: {query[:100]}{query_suffix}\033[0m")
+    print(f"\033[37m[网络搜索] 关键词: {query[:100]}{query_suffix}\033[0m")
 
     result = tavily_client.search(
         query=query,
@@ -69,7 +69,7 @@ def internet_search(
 
     # 输出检索摘要
     results_count = len(result.get("results", []))
-    print(f"\033[36m[网络搜索] 返回 {results_count} 条结果\033[0m")
+    print(f"\033[37m[网络搜索] 返回 {results_count} 条结果\033[0m")
 
     return result
 

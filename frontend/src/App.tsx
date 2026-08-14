@@ -1,11 +1,13 @@
 import { Alert, App as AntApp, Button, Popconfirm, Tooltip } from "antd";
-import { DeleteOutlined } from "@ant-design/icons";
+import { DeleteOutlined, LogoutOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { ChatComposer } from "./components/ChatComposer";
 import { ConversationThread } from "./components/ConversationThread";
 import type { ChatTurn } from "./components/ConversationThread";
+import { LoginPage } from "./components/LoginPage";
 import { useDeepAgentSession } from "./hooks/useDeepAgentSession";
-import type { ConnectionState, UploadedItem } from "./types";
+import { clearUser, getStoredUser, storeUser } from "./lib/auth";
+import type { AuthResponse, ConnectionState, UploadedItem } from "./types";
 
 function wsDotColor(state: ConnectionState): string {
   const colors: Record<ConnectionState, string> = {
@@ -41,10 +43,11 @@ function createTurn(content: string): ChatTurn {
 
 export default function App() {
   const { message } = AntApp.useApp();
+  const [user, setUser] = useState<AuthResponse | null>(getStoredUser);
   const [query, setQuery] = useState("");
   const [stagedItems, setStagedItems] = useState<UploadedItem[]>([]);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
-  const session = useDeepAgentSession();
+  const session = useDeepAgentSession(user?.user_id ?? null);
 
   useEffect(() => {
     setTurns((previous) => {
@@ -127,6 +130,25 @@ export default function App() {
     session.loadSessionsList();
   }
 
+  function handleLogin(nextUser: AuthResponse) {
+    storeUser(nextUser);
+    setUser(nextUser);
+    // 切换用户后生成全新会话，避免沿用上一个用户在 localStorage 中的 thread_id
+    session.resetSession();
+    setTurns([]);
+    setQuery("");
+    setStagedItems([]);
+  }
+
+  function handleLogout() {
+    clearUser();
+    setUser(null);
+    session.resetSession();
+    setTurns([]);
+    setQuery("");
+    setStagedItems([]);
+  }
+
   async function handleLoadSession(threadId: string) {
     try {
       const turns = await session.loadSession(threadId);
@@ -156,6 +178,10 @@ export default function App() {
 
   const dotColor = wsDotColor(session.connectionState);
   const dotLabel = wsDotLabel(session.connectionState);
+
+  if (!user) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
 
   return (
     <div className="chat-app-shell min-h-dvh">
@@ -217,6 +243,26 @@ export default function App() {
             )}
           </div>
         </div>
+
+        <div className="sidebar-footer">
+          <div className="sidebar-footer-user">
+            <span className="sidebar-avatar">{user.username.charAt(0).toUpperCase()}</span>
+            <div className="sidebar-footer-meta">
+              <span className="sidebar-footer-name">{user.username}</span>
+              <span className="sidebar-footer-label">当前用户</span>
+            </div>
+          </div>
+          <Tooltip title="退出登录" placement="top">
+            <Button
+              className="sidebar-logout"
+              aria-label="退出登录"
+              icon={<LogoutOutlined />}
+              size="small"
+              type="text"
+              onClick={handleLogout}
+            />
+          </Tooltip>
+        </div>
       </aside>
 
       <main className="chat-main">
@@ -241,6 +287,7 @@ export default function App() {
           <ConversationThread
             onUseExample={setQuery}
             turns={turns}
+            username={user.username}
           />
         </section>
 

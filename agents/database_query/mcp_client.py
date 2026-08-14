@@ -50,7 +50,7 @@ async def _ensure_session():
             ClientSession(read_stream, write_stream)
         )
         await _persistent_session.initialize()
-        logger.info("MCP 持久 session 已建立")
+        logger.debug("MCP 持久 session 已建立")
         return _persistent_session
 
 

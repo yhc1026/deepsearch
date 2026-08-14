@@ -1,18 +1,21 @@
 """
-A2A Agent 工具模块
+A2A Agent 工具模块（官方 a2a-sdk）
 
-为主智能体提供 3 个 LangChain 工具，每个工具封装对远程子智能体服务的 HTTP 调用。
-统一返回标准业务信封 JSON：{"code":"HIT|MISS|ERROR","content":"..."}
+为主智能体提供 3 个 LangChain 工具，每个工具封装对远程子智能体服务的调用。
+通过 A2ACardResolver 自动发现子智能体，发送同步 message/send 请求，
+从返回 Message 的 DataPart 中重建标准业务信封 JSON：{"code":"HIT|MISS|ERROR","content":"..."}
 """
 
-import asyncio
-import json
-import urllib.error
-import urllib.request
-
+from a2a.client import ClientCallContext, ClientConfig, ClientFactory
+from a2a.helpers.proto_helpers import (
+    get_data_parts,
+    get_text_parts,
+    new_text_message,
+)
+from a2a.types import Role, SendMessageRequest
 from langchain_core.tools import tool
 
-from shared.agent_result import ERROR, HIT, MISS, make_result, parse_result
+from shared.agent_result import ERROR, make_result, parse_result
 from shared.monitor import monitor
 
 SUBAGENT_URLS = {
@@ -20,98 +23,61 @@ SUBAGENT_URLS = {
     "database_query": "http://localhost:8002",
     # "ragflow": "http://localhost:8003",  # TODO: 取消注释以启用 RAGFlow
     "vector_search": "http://localhost:8004",
+    "memory_agent": "http://localhost:8005",
 }
 
 TIMEOUT_SECONDS = 120
 
 
-def _call_subagent_sync(service_key: str, query: str, tool_name: str) -> str:
-    """同步 HTTP 调用子智能体，始终返回标准信封 JSON 字符串。"""
-    url = f"{SUBAGENT_URLS[service_key]}/tasks"
-    payload = json.dumps({"query": query}).encode("utf-8")
+async def _call_subagent(service_key: str, query: str, tool_name: str) -> str:
+    """通过官方 a2a-sdk 调用子智能体，始终返回标准信封 JSON 字符串。"""
+    base_url = SUBAGENT_URLS[service_key]
 
-    print(f"\033[36m  [SubAgent] → {tool_name} ({url})\033[0m")
+    print(f"\033[37m  [SubAgent] → {tool_name} ({base_url})\033[0m")
 
     monitor.report_tool(
         tool_name=tool_name,
         args={"service": service_key, "query": query},
     )
 
+    client = None
     try:
-        req = urllib.request.Request(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-
-        if data.get("status") == "completed":
-            # 优先使用服务端显式 result_code
-            raw_code = data.get("result_code")
-            if raw_code:
-                explicit = raw_code.upper()
-            else:
-                explicit = ""
-            raw_result_value = data.get("result")
-            if raw_result_value:
-                raw_result = raw_result_value
-            else:
-                raw_result = ""
-            if explicit in (HIT, MISS, ERROR):
-                _, content = parse_result(raw_result)
-                # result 本身已是信封时用其 content；否则整段当 content
-                if not content and raw_result:
-                    code2, content2 = parse_result(raw_result)
-                    if content2:
-                        content = content2
-                    else:
-                        content = raw_result
-                if content:
-                    result_content = content
-                elif raw_result:
-                    result_content = raw_result
-                else:
-                    result_content = ""
-                return make_result(explicit, result_content)
-
-            code, content = parse_result(raw_result)
-            if content:
-                result_content = content
-            else:
-                result_content = "子智能体返回了空结果"
-            return make_result(code, result_content)
-
-        error_msg: str = data.get("error", "未知错误")
-        agent_name = data.get("agent_name", service_key)
-        raw_err_code = data.get("result_code")
-        if raw_err_code:
-            explicit_err = raw_err_code.upper()
-        else:
-            explicit_err = ERROR
-        if explicit_err in (HIT, MISS, ERROR):
-            result_code = explicit_err
-        else:
-            result_code = ERROR
-        return make_result(
-            result_code,
-            f"子智能体 [{agent_name}] 执行失败: {error_msg}",
+        factory = ClientFactory(ClientConfig(streaming=False))
+        client = await factory.create_from_url(
+            base_url,
+            resolver_http_kwargs={"timeout": TIMEOUT_SECONDS},
         )
 
-    except TimeoutError:
-        return make_result(ERROR, f"调用子智能体超时（>{TIMEOUT_SECONDS}s）: {url}")
-    except urllib.error.URLError as e:
-        return make_result(ERROR, f"无法连接到子智能体服务 {url}: {e.reason}")
-    except json.JSONDecodeError:
-        return make_result(ERROR, "子智能体服务返回了无效的响应格式")
-    except Exception as e:
-        return make_result(ERROR, f"调用子智能体时发生异常: {str(e)}")
+        request = SendMessageRequest(
+            message=new_text_message(query, role=Role.ROLE_USER)
+        )
 
+        async for stream_response in client.send_message(
+            request,
+            context=ClientCallContext(timeout=TIMEOUT_SECONDS),
+        ):
+            if not stream_response.HasField("message"):
+                continue
 
-async def _call_subagent(service_key: str, query: str, tool_name: str) -> str:
-    """异步包装：把阻塞 HTTP 放到线程池。"""
-    return await asyncio.to_thread(_call_subagent_sync, service_key, query, tool_name)
+            parts = stream_response.message.parts
+            data_parts = get_data_parts(parts)
+            if data_parts:
+                code, content = parse_result(data_parts[0])
+            else:
+                text = "\n".join(get_text_parts(parts))
+                code, content = parse_result(text)
+            return make_result(code, content)
+
+        return make_result(ERROR, "子智能体返回了空结果")
+
+    except Exception as e:  # noqa: BLE001
+        return make_result(ERROR, f"调用子智能体 [{service_key}] 失败: {str(e)}")
+    finally:
+        if client is not None:
+            try:
+                await client.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 @tool
@@ -170,3 +136,8 @@ async def call_vector_search(query: str, collection: str = "default") -> str:
     适用场景：企业内部非结构化文档的知识检索。
     """
     return await _call_subagent("vector_search", query, "A2A-向量检索助手")
+
+
+async def call_memory_agent(message: str) -> str:
+    """向长期记忆 Agent 发送记忆提取请求（由 orchestrator 结尾 fire-and-forget 调用）。"""
+    return await _call_subagent("memory_agent", message, "A2A-记忆助手")

@@ -44,8 +44,9 @@ SERVICES: List[Tuple[str, str, int | None]] = [
     ("数据库查询智能体",  "agents.database_query.server:app",              8002),
     # ("RAGFlow智能体",     "agents.ragflow_search.server:app",                     8003),  # TODO: 取消注释以启用 RAGFlow
     ("向量检索智能体",    "agents.vector_search.server:app",               8004),
+    ("长期记忆智能体",    "agents.memory_agent.server:app",              8005),
     ("MySQL MCP Server",  "agents.database_query.mcp_server:http_app", 8100),
-    ("异步摘要Agent",     "agents.backend.summary_agent.server:main",    None),
+    ("异步摘要智能体",     "agents.backend.summary_agent.server:main",    None),
 ]
 
 processes: List[Tuple[str, subprocess.Popen]] = []
@@ -69,6 +70,8 @@ def start_service(name: str, app_path: str, port: int | None, reload: bool = Fal
         if reload:
             cmd.append("--reload")
     # 必须继承主进程 stdout：若用 PIPE 又不读，缓冲写满后子进程会阻塞假死
+    env = os.environ.copy()
+    env["DEEPSEARCH_SERVICE_NAME"] = name
     proc = subprocess.Popen(
         cmd,
         stdout=None,
@@ -76,16 +79,9 @@ def start_service(name: str, app_path: str, port: int | None, reload: bool = Fal
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
     )
     processes.append((name, proc))
-    if reload:
-        reload_tag = " [reload]"
-    else:
-        reload_tag = ""
-    if port is not None:
-        logger.info(f"[{name}]{reload_tag} 启动中... http://localhost:{port}  (pid={proc.pid})")
-    else:
-        logger.info(f"[{name}]{reload_tag} 启动中... (pid={proc.pid})")
     return proc
 
 
@@ -109,37 +105,8 @@ def shutdown() -> None:
 if __name__ == "__main__":
     reload_mode = "--reload" in sys.argv
 
-    print("=" * 55)
-    print("  DeepSearch Agents 单机多进程版 启动中...")
-    if reload_mode:
-        print("  [开发模式] 启用热重载 (--reload)")
-    print("=" * 55)
-    print()
-
-    # 启动所有服务
     for name, app_path, port in SERVICES:
         start_service(name, app_path, port, reload=reload_mode)
-
-    print()
-    print("所有服务已启动！")
-    print()
-    print("  端点总览:")
-    print(f"    {'主智能体 (WebSocket+HTTP)':<30} http://localhost:8000")
-    print(f"    {'网络搜索智能体 A2A':<30} http://localhost:8001")
-    print(f"    {'数据库查询智能体 A2A':<30} http://localhost:8002")
-    # print(f"    {'RAGFlow智能体 A2A':<30} http://localhost:8003")  # TODO: 取消注释以启用 RAGFlow
-    print(f"    {'向量检索智能体 A2A':<30} http://localhost:8004")
-    print(f"    {'MySQL MCP Server':<30} http://localhost:8100")
-    print()
-    print("  前端连接: http://localhost:8000")
-    print("  Agent Cards: GET http://localhost:800{1,2,3,4}/")
-    print("  MCP Status:  POST http://localhost:8100/mcp")
-    if reload_mode:
-        print()
-        print("  [reload] 源码变更时各服务自动重启")
-    print()
-    print("  按 Ctrl+C 停止所有服务")
-    print()
 
     try:
         # 主进程等待，同时监控子进程状态

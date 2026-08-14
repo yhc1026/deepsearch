@@ -37,6 +37,7 @@ service = A2AAgentService(
     tools=_fallback_tools,
     system_prompt=db_config["system_prompt"],
     skills_dir=db_config.get("skills_dir"),
+    base_url="http://localhost:8002",
 )
 
 # 后台刷新间隔（秒），可通过环境变量调整
@@ -92,7 +93,7 @@ async def db_lifespan(app):
     """FastAPI lifespan：首次加载 MCP 工具，启动后台刷新任务。"""
     global service
 
-    setup_logging()
+    setup_logging(log_startup=False)
 
     # 首次加载 MCP 工具
     try:
@@ -105,7 +106,7 @@ async def db_lifespan(app):
         service.tools = all_tools
         service.system_prompt = db_config["system_prompt"] + "\n" + instruction
         service.create_agent()
-        logger.info(f"MCP 工具首次加载成功: {[t.name for t in mcp_tools]}")
+        logger.info("启动成功")
     except Exception:
         mcp_load_error = traceback.format_exc()
         service.create_agent()

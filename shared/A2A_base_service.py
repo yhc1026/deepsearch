@@ -2,20 +2,46 @@
 A2A (Agent-to-Agent) 服务基类
 Agent实现最重要的内核，让Agents获得web应用的能力
 
-封装 FastAPI 应用创建、Agent Card 端点、任务执行端点、健康检查端点，
-以及 DeepAgent 的创建与执行。子类只需提供 name, description, tools,
-system_prompt 即可得到一个独立的 Agent 服务。
+基于 Google 官方 a2a-sdk 实现标准 A2A 协议（JSON-RPC 2.0）：
+- Agent Card 自动发现端点 (GET /.well-known/agent-card.json)
+- 同步消息发送 (message/send)，无流式
+- 结果信封（result_code）通过 DataPart 承载
+
+子类只需提供 name, description, tools, system_prompt 即可得到一个独立的 Agent 服务。
 """
 
 import asyncio
+import os
 import uuid
+import warnings
 from contextlib import asynccontextmanager
 from typing import Any, Optional
+
+# 先导入 langchain_core 触发其 surface_langchain_deprecation_warnings（把弃用告警设为 default），
+# 再关闭 PendingDeprecationWarning，避免 langgraph 导入时刷屏
+import langchain_core
+warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
 
 from deepagents import create_deep_agent
 from fastapi import FastAPI
 from langgraph.checkpoint.memory import InMemorySaver
-from pydantic import BaseModel
+
+from a2a.helpers.proto_helpers import new_data_part, new_message, new_text_part
+from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.events import EventQueue
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes.agent_card_routes import create_agent_card_routes
+from a2a.server.routes.fastapi_routes import add_a2a_routes_to_fastapi
+from a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import (
+    AgentCapabilities,
+    AgentCard,
+    AgentInterface,
+    AgentSkill,
+    Role,
+)
+from a2a.utils.constants import PROTOCOL_VERSION_1_0, TransportProtocol
 
 from shared.llm import model
 from shared.logger import setup_logging
@@ -26,31 +52,76 @@ TASK_TIMEOUT_SECONDS = 110
 RECURSION_LIMIT = 22
 
 
-class TaskRequest(BaseModel):
-    """A2A 任务请求体"""
+class _A2AAgentExecutor(AgentExecutor):
+    """将 DeepAgent 的 ainvoke 适配为官方 A2A AgentExecutor。
 
-    task_id: Optional[str] = None
-    query: str
+    采用「即时响应」工作流：execute 结束后仅入队一个 Message，
+    其中 text part 承载可读正文，data part 承载业务信封 {code, content}。
+    """
 
+    def __init__(self, service: "A2AAgentService") -> None:
+        self._service = service
 
-class TaskResponse(BaseModel):
-    """A2A 任务响应体"""
+    async def execute(
+        self, context: RequestContext, event_queue: EventQueue
+    ) -> None:
+        query = context.get_user_input()
+        task_id = context.task_id or str(uuid.uuid4())
+        context_id = context.context_id
 
-    task_id: str
-    status: str  # "completed" | "failed"  —— 传输层
-    result: Optional[str] = None
-    result_code: Optional[str] = None  # HIT | MISS | ERROR —— 业务层
-    error: Optional[str] = None
-    agent_name: str
+        if self._service.agent is None:
+            result_code, content = ERROR, "Agent 尚未初始化完成，请稍后重试"
+        else:
+            try:
+                result = await asyncio.wait_for(
+                    self._service.agent.ainvoke(
+                        {
+                            "messages": [
+                                {"role": "user", "content": query}
+                            ]
+                        },
+                        config={
+                            "configurable": {"thread_id": task_id},
+                            "recursion_limit": RECURSION_LIMIT,
+                        },
+                    ),
+                    timeout=TASK_TIMEOUT_SECONDS,
+                )
+                result_code, content = _extract_result_from_messages(
+                    result.get("messages", [])
+                )
+            except asyncio.TimeoutError:
+                result_code = ERROR
+                content = f"任务执行超时（>{TASK_TIMEOUT_SECONDS}s）"
+            except Exception as e:  # noqa: BLE001
+                result_code = ERROR
+                content = str(e)
+
+        message = new_message(
+            parts=[
+                new_text_part(content),
+                new_data_part({"code": result_code, "content": content}),
+            ],
+            context_id=context_id,
+            task_id=task_id,
+            role=Role.ROLE_AGENT,
+        )
+        await event_queue.enqueue_event(message)
+
+    async def cancel(
+        self, context: RequestContext, event_queue: EventQueue
+    ) -> None:
+        # 本次改造不接入任务取消
+        return
 
 
 class A2AAgentService:
-    """A2A Agent 服务基类
+    """A2A Agent 服务基类（官方 a2a-sdk）
 
     封装：
-    1. FastAPI 应用创建
-    2. Agent Card 端点 (GET /)
-    3. 任务执行端点 (POST /tasks)
+    1. FastAPI 应用创建（挂载官方 A2A 路由）
+    2. Agent Card 端点 (GET /.well-known/agent-card.json)
+    3. JSON-RPC 消息发送端点 (POST /)
     4. 健康检查端点 (GET /health)
     5. DeepAgent 创建与执行
 
@@ -60,6 +131,7 @@ class A2AAgentService:
             description="负责进行网络知识搜索...",
             tools=[internet_search],
             system_prompt="你是一个专业的网络信息查询助手...",
+            base_url="http://localhost:8001",
         )
         service.create_agent()
         app = service.build_app()
@@ -72,12 +144,14 @@ class A2AAgentService:
         tools: list,
         system_prompt: str,
         skills_dir: Optional[str] = None,
+        base_url: Optional[str] = None,
     ):
         self.name = name
         self.description = description
         self.tools = tools
         self.system_prompt = system_prompt
         self.skills_dir = skills_dir
+        self.base_url = base_url
         self.agent: Any = None
         self.checkpointer: Any = None
 
@@ -111,25 +185,62 @@ class A2AAgentService:
             self.system_prompt = system_prompt
         self.create_agent()
 
-    def _build_capabilities(self) -> list[dict]:
-        """从 tools 列表提取能力描述"""
-        capabilities = []
-        for tool in self.tools:
-            if tool.description:
-                description = tool.description.split("\n")[0]
-            else:
-                description = ""
-            capabilities.append({
-                "name": tool.name,
-                "description": description,
-            })
-        return capabilities
+    def _resolve_base_url(self, base_url: str | None) -> str:
+        """解析本服务对外广播的基础 URL（Agent Card 自动发现用）。"""
+        resolved = base_url or self.base_url or os.getenv("A2A_BASE_URL")
+        if not resolved:
+            raise ValueError(
+                "缺少 base_url：请在 A2AAgentService(base_url=...) 或环境变量 "
+                "A2A_BASE_URL 中提供本服务的对外地址。"
+            )
+        return resolved.rstrip("/")
 
-    def build_app(self, lifespan=None) -> FastAPI:
-        """构建 FastAPI 应用，注册 A2A 标准端点
+    def _build_agent_card(self, base_url: str) -> AgentCard:
+        """构建官方 A2A Agent Card。"""
+        skills = []
+        for tool in self.tools:
+            description = (tool.description or "").split("\n")[0]
+            skills.append(
+                AgentSkill(
+                    id=f"skill-{tool.name}",
+                    name=tool.name,
+                    description=description,
+                    tags=["tool"],
+                )
+            )
+
+        return AgentCard(
+            name=self.name,
+            description=self.description,
+            version="1.0.0",
+            supported_interfaces=[
+                AgentInterface(
+                    url=base_url,
+                    protocol_binding=TransportProtocol.JSONRPC,
+                    protocol_version=PROTOCOL_VERSION_1_0,
+                )
+            ],
+            capabilities=AgentCapabilities(),
+            default_input_modes=["text/plain"],
+            default_output_modes=["text/plain", "application/json"],
+            skills=skills,
+        )
+
+    def build_app(self, lifespan=None, base_url: str | None = None) -> FastAPI:
+        """构建 FastAPI 应用，注册官方 A2A 标准端点
 
         lifespan 用于异步初始化（如 MCP 工具加载），在 uvicorn 事件循环中执行。
         """
+        resolved_base_url = self._resolve_base_url(base_url)
+        agent_card = self._build_agent_card(resolved_base_url)
+
+        executor = _A2AAgentExecutor(self)
+        request_handler = DefaultRequestHandler(
+            agent_executor=executor,
+            task_store=InMemoryTaskStore(),
+            agent_card=agent_card,
+        )
+
         if lifespan is None:
 
             @asynccontextmanager
@@ -139,86 +250,18 @@ class A2AAgentService:
 
             lifespan = _default_lifespan
 
-        app = FastAPI(title=self.name, lifespan=lifespan)
+        @asynccontextmanager
+        async def _lifespan(_app: FastAPI):
+            async with lifespan(_app):
+                yield
+            await request_handler.aclose()
 
-        @app.get("/")
-        async def agent_card():
-            """Agent Card: 返回本服务的身份和能力描述"""
-            return {
-                "name": self.name,
-                "description": self.description,
-                "version": "1.0.0",
-                "capabilities": self._build_capabilities(),
-                "endpoints": {
-                    "tasks": "/tasks",
-                    "health": "/health",
-                },
-            }
-
-        @app.post("/tasks", response_model=TaskResponse)
-        async def execute_task(request: TaskRequest):
-            """执行 A2A 任务: 接收查询 → 运行 Agent → 返回结果"""
-            if request.task_id:
-                task_id = request.task_id
-            else:
-                task_id = str(uuid.uuid4())
-
-            try:
-                if self.agent is None:
-                    return TaskResponse(
-                        task_id=task_id,
-                        status="failed",
-                        result_code=ERROR,
-                        error="Agent 尚未初始化完成，请稍后重试",
-                        agent_name=self.name,
-                    )
-
-                result = await asyncio.wait_for(
-                    self.agent.ainvoke(
-                        {
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": request.query,
-                                }
-                            ]
-                        },
-                        config={
-                            "configurable": {"thread_id": task_id},
-                            "recursion_limit": RECURSION_LIMIT,
-                        },
-                    ),
-                    timeout=TASK_TIMEOUT_SECONDS,
-                )
-
-                result_code, final_msg = _extract_result_from_messages(
-                    result.get("messages", [])
-                )
-
-                return TaskResponse(
-                    task_id=task_id,
-                    status="completed",
-                    result=final_msg,
-                    result_code=result_code,
-                    agent_name=self.name,
-                )
-
-            except asyncio.TimeoutError:
-                return TaskResponse(
-                    task_id=task_id,
-                    status="failed",
-                    result_code=ERROR,
-                    error=f"任务执行超时（>{TASK_TIMEOUT_SECONDS}s）",
-                    agent_name=self.name,
-                )
-            except Exception as e:
-                return TaskResponse(
-                    task_id=task_id,
-                    status="failed",
-                    result_code=ERROR,
-                    error=str(e),
-                    agent_name=self.name,
-                )
+        app = FastAPI(title=self.name, lifespan=_lifespan)
+        add_a2a_routes_to_fastapi(
+            app,
+            agent_card_routes=create_agent_card_routes(agent_card),
+            jsonrpc_routes=create_jsonrpc_routes(request_handler, rpc_url="/"),
+        )
 
         @app.get("/health")
         async def health():

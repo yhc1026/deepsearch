@@ -1,5 +1,10 @@
 export type ConnectionState = "connecting" | "connected" | "reconnecting" | "closed";
 
+export interface AuthResponse {
+  user_id: number;
+  username: string;
+}
+
 export type MonitorEventName =
   | "session_created"
   | "tool_start"

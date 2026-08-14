@@ -67,7 +67,7 @@ def list_sql_tables() -> str:
 
     # 埋点：工具一被调用，前端可以展示当前正在查询数据库表名
     monitor.report_tool(tool_name="数据库表名查询工具：list_sql_tables", args={})
-    print("\033[36m[数据库] 查询可用表…\033[0m")
+    print("\033[37m[数据库] 查询可用表…\033[0m")
 
     # 加载数据库连接信息
     config = get_db_config()
@@ -117,7 +117,7 @@ def get_table_data(table_name) -> str:
         tool_name="数据库表数据查询工具：get_table_data",
         args={"table_name": table_name},
     )
-    print(f"\033[36m[数据库] 预览 {table_name}…\033[0m")
+    print(f"\033[37m[数据库] 预览 {table_name}…\033[0m")
 
     # 获取数据库参数
     config = get_db_config()
@@ -165,7 +165,7 @@ def execute_sql_query(query) -> str:
         query_suffix = "…"
     else:
         query_suffix = ""
-    print(f"\033[36m[数据库] 执行 SQL: {query[:120]}{query_suffix}\033[0m")
+    print(f"\033[37m[数据库] 执行 SQL: {query[:120]}{query_suffix}\033[0m")
     monitor.report_tool(
         tool_name="数据库表数据查询工具：execute_sql_query", args={"query": query}
     )
