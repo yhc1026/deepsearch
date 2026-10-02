@@ -20,7 +20,19 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-large")
 CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
 
 # 检索参数
-HYBRID_TOP_K = int(os.getenv("VECTOR_SEARCH_TOP_K", "10"))
+# 粗排召回数：dense + BM25 经 RRF 融合后，每路返回 top K 个 chunk
+HYBRID_TOP_K = int(os.getenv("VECTOR_SEARCH_TOP_K", "20"))
 QUERY_VARIANTS = int(os.getenv("VECTOR_SEARCH_VARIANTS", "3"))
 CHUNK_SIZE = int(os.getenv("VECTOR_CHUNK_SIZE", "800"))
 CHUNK_OVERLAP = int(os.getenv("VECTOR_CHUNK_OVERLAP", "150"))
+
+# Rerank 精排参数
+# 多路召回合并去重后，进入精排的候选池大小
+RERANK_CANDIDATE_K = int(os.getenv("VECTOR_RERANK_CANDIDATE_K", "20"))
+# 精排融合后最终写入 prompt 的结果数
+RERANK_TOP_K = int(os.getenv("VECTOR_RERANK_TOP_K", "3"))
+
+# Rerank 服务配置（硅基流动 BGE-Reranker-v2-m3）
+RERANK_API_KEY = os.getenv("RERANK_API_KEY", "")
+RERANK_BASE_URL = os.getenv("RERANK_BASE_URL", "https://api.siliconflow.cn/v1")
+RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")

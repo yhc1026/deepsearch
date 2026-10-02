@@ -25,7 +25,13 @@ from shared.agent_result import ERROR, HIT, MISS, make_result
 from shared.monitor import monitor
 
 from .ingestion import ingest_text
-from .settings import HYBRID_TOP_K, QUERY_VARIANTS
+from .rerank import rerank
+from .settings import (
+    HYBRID_TOP_K,
+    QUERY_VARIANTS,
+    RERANK_CANDIDATE_K,
+    RERANK_TOP_K,
+)
 from .vector_store import vector_store
 
 _MULTI_QUERY_SYSTEM = """你是一个查询改写专家。你的任务是把用户的一个检索问题改写为 N 个不同视角的查询变体。
@@ -86,6 +92,33 @@ def _deduplicate_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(seen.values(), key=lambda x: x["score"], reverse=True)
 
 
+def _minmax(values: list[float]) -> list[float]:
+    """min-max 归一化到 [0,1]，单值或全相等时统一返回 1.0。"""
+    lo, hi = min(values), max(values)
+    if hi <= lo:
+        return [1.0] * len(values)
+    return [(v - lo) / (hi - lo) for v in values]
+
+
+def _fuse_scores(
+    candidates: list[dict[str, Any]],
+    rerank_scores: dict[int, float],
+) -> list[dict[str, Any]]:
+    """粗排分与精排分各自 min-max 归一化后按 50:50 加权，返回按总分降序的候选。"""
+    coarse = [c["score"] for c in candidates]
+    coarse_norm = _minmax(coarse)
+
+    n = len(candidates)
+    rerank_vals = [rerank_scores.get(i, 0.0) for i in range(n)]
+    rerank_norm = _minmax(rerank_vals) if rerank_scores else [0.0] * n
+
+    for i, c in enumerate(candidates):
+        c["rerank_score"] = rerank_vals[i]
+        c["final_score"] = 0.5 * coarse_norm[i] + 0.5 * rerank_norm[i]
+
+    return sorted(candidates, key=lambda x: x["final_score"], reverse=True)
+
+
 # =============================================================================
 # LangChain Tools
 # =============================================================================
@@ -100,8 +133,9 @@ def search_knowledge_base(
 
     检索流程：
     1. 将 query 改写为 3 个不同视角的变体（多路召回）
-    2. 每个变体执行 hybrid_search（语义向量 + 关键词匹配，RRF 融合）
-    3. 合并去重所有结果，按综合分数排序
+    2. 每个变体执行 hybrid_search（语义向量 + 关键词匹配，RRF 融合）粗排召回
+    3. 合并去重后取候选池，用 BGE-Reranker 对原始 query 精排
+    4. 粗排/精排分数各自归一化后按 50:50 加权，取 top 结果
 
     :param query: 自包含的完整检索问题
     :param collection: 目标知识库名称，默认 "default"
@@ -119,7 +153,7 @@ def search_knowledge_base(
         for vi, v in enumerate(variants):
             print(f"  {vi + 1}. {v[:100]}")
 
-        # Step 2: 每个变体执行混合检索
+        # Step 2: 每个变体执行混合检索（粗排召回，RRF 融合）
         all_results: list[dict[str, Any]] = []
         for v in variants:
             results = vector_store.hybrid_search(
@@ -129,28 +163,47 @@ def search_knowledge_base(
             )
             all_results.extend(results)
 
-        # Step 3: 去重 + 排序
+        # Step 3: 去重 + 排序，取候选池进入精排
         merged = _deduplicate_results(all_results)
-        merged = merged[:HYBRID_TOP_K]
+        candidates = merged[:RERANK_CANDIDATE_K]
 
-        if not merged:
+        if not candidates:
             return make_result(MISS, f"知识库「{collection}」中未找到相关内容")
 
-        # Step 4: 格式化输出
+        # Step 4: rerank 精排（原始 query 与候选 chunk 逐对比对）
+        candidate_texts = [c["text"] for c in candidates]
+        rerank_scores: dict[int, float] = {}
+        try:
+            for r in rerank(query, candidate_texts):
+                rerank_scores[int(r.get("index", -1))] = float(r.get("relevance_score", 0.0))
+            print(f"\033[37m[VectorSearch] 精排完成: {len(rerank_scores)}/{len(candidates)} 条\033[0m")
+        except Exception as e:
+            print(f"\033[33m[VectorSearch] 精排失败，降级为纯粗排: {e}\033[0m")
+
+        # Step 5: 粗排/精排分数各自 min-max 归一化后按 50:50 加权，取 top
+        final = _fuse_scores(candidates, rerank_scores)
+        final = final[:RERANK_TOP_K]
+
+        # Step 6: 格式化输出
         items: list[str] = []
-        for i, item in enumerate(merged):
+        for i, item in enumerate(final):
             sources = item.get("sources", [])
             source_tag = "+".join(sources)
             meta = item.get("metadata", {})
             src_file = meta.get("source", "未知来源")
             items.append(
-                f"[{i + 1}] (分数: {item['score']:.3f}, 召回: {source_tag}, 来源: {src_file})\n"
+                f"[{i + 1}] (综合: {item['final_score']:.3f}, 粗排: {item['score']:.3f}, "
+                f"精排: {item.get('rerank_score', 0.0):.3f}, 召回: {source_tag}, 来源: {src_file})\n"
                 f"{item['text'][:600]}"
             )
 
-        result_text = f"从知识库「{collection}」检索到 {len(merged)} 条相关结果（{len(variants)}路召回）：\n\n" + "\n\n---\n\n".join(items)
+        result_text = (
+            f"从知识库「{collection}」检索到 {len(final)} 条最相关内容"
+            f"（{len(variants)}路粗排召回 + rerank 精排）：\n\n"
+            + "\n\n---\n\n".join(items)
+        )
 
-        print(f"\033[37m[VectorSearch] 检索完成: {len(merged)} 条结果\033[0m")
+        print(f"\033[37m[VectorSearch] 检索完成: 返回 {len(final)} 条结果\033[0m")
         return make_result(HIT, result_text)
 
     except Exception as e:
