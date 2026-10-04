@@ -19,6 +19,7 @@ from langchain_core.tools import tool
 
 from shared.agent_result import ERROR, HIT, MISS, make_result
 from shared.monitor import monitor
+from shared.request_context import get_request_metadata
 
 from agents.vector_search.vector_store import vector_store
 
@@ -30,24 +31,28 @@ def _now_iso() -> str:
 
 
 @tool
-def search_memory(query: str, user_id: str) -> str:
-    """检索某用户的已有长期记忆，用于检测是否需要覆盖旧记忆。
+def search_memory(query: str) -> str:
+    """检索当前用户的已有长期记忆，用于检测是否需要覆盖旧记忆。
 
-    返回与 query 语义/关键词相近的已有记忆及其 memory_id 和来源。
+    返回与 query 语义相近的已有记忆及其 memory_id 和来源。
+    当前用户由服务端从请求元数据注入，无需调用方提供 user_id。
 
     :param query: 一条待写入的事实（自包含，用于相似检索）
-    :param user_id: 用户 ID（隔离不同用户的记忆）
     :return: 标准信封 JSON（code + content）
     """
     monitor.report_tool(
-        tool_name="search_memory", args={"query": query, "user_id": user_id}
+        tool_name="search_memory", args={"query": query}
     )
     try:
-        results = vector_store.hybrid_search(
+        user_id = get_request_metadata().get("user_id")
+        if not user_id:
+            return make_result(ERROR, "缺少 user_id，无法隔离检索")
+
+        results = vector_store.dense_search(
             collection_name=MEMORY_COLLECTION,
             query=query,
             top_k=5,
-            where={"user_id": user_id},
+            where={"user_id": str(user_id)},
         )
         if not results:
             return make_result(MISS, "未检索到该用户的相似旧记忆")
@@ -72,27 +77,27 @@ def search_memory(query: str, user_id: str) -> str:
 @tool
 def write_memory(
     fact: str,
-    user_id: str,
-    source_session_id: str,
-    source_turn_index: str,
-    source_query: str,
     overwrite_memory_id: str = "",
 ) -> str:
     """写入或覆盖一条长期记忆（事实）。
 
+    user_id 及溯源字段（source_session_id / source_turn_index / source_query）
+    由服务端从请求元数据注入，无需调用方提供。
+
     :param fact: 事实性内容，自包含的完整陈述
-    :param user_id: 用户 ID
-    :param source_session_id: 该事实来自的会话 ID
-    :param source_turn_index: 该事实来自的轮次索引
-    :param source_query: 该事实对应的用户原始问题
     :param overwrite_memory_id: 若要覆盖某条冲突旧记忆，传该旧记忆的 memory_id；新增则留空
     :return: 标准信封 JSON（code + content）
     """
     monitor.report_tool(
         tool_name="write_memory",
-        args={"fact": fact, "user_id": user_id, "overwrite_memory_id": overwrite_memory_id},
+        args={"fact": fact, "overwrite_memory_id": overwrite_memory_id},
     )
     try:
+        meta = get_request_metadata()
+        user_id = meta.get("user_id")
+        if not user_id:
+            return make_result(ERROR, "缺少 user_id，无法写入记忆")
+
         fact_text = (fact or "").strip()
         if not fact_text:
             return make_result(ERROR, "事实内容不能为空")
@@ -100,10 +105,10 @@ def write_memory(
         now = _now_iso()
         memory_id = overwrite_memory_id.strip() or f"mem_{uuid.uuid4().hex}"
         metadata: dict[str, Any] = {
-            "user_id": user_id,
-            "source_session_id": source_session_id,
-            "source_turn_index": source_turn_index,
-            "source_query": (source_query or "")[:500],
+            "user_id": str(user_id),
+            "source_session_id": meta.get("source_session_id", ""),
+            "source_turn_index": meta.get("source_turn_index", ""),
+            "source_query": (meta.get("source_query") or "")[:500],
             "created_at": now,
             "updated_at": now,
         }

@@ -46,6 +46,7 @@ from a2a.utils.constants import PROTOCOL_VERSION_1_0, TransportProtocol
 from shared.llm import model
 from shared.logger import setup_logging
 from shared.agent_result import ERROR, HIT, MISS, parse_result
+from shared.request_context import reset_request_metadata, set_request_metadata
 
 # 略小于客户端 A2A timeout(120s)，避免服务端无限跑、客户端已放弃
 TASK_TIMEOUT_SECONDS = 110
@@ -69,44 +70,49 @@ class _A2AAgentExecutor(AgentExecutor):
         task_id = context.task_id or str(uuid.uuid4())
         context_id = context.context_id
 
-        if self._service.agent is None:
-            result_code, content = ERROR, "Agent 尚未初始化完成，请稍后重试"
-        else:
-            try:
-                result = await asyncio.wait_for(
-                    self._service.agent.ainvoke(
-                        {
-                            "messages": [
-                                {"role": "user", "content": query}
-                            ]
-                        },
-                        config={
-                            "configurable": {"thread_id": task_id},
-                            "recursion_limit": RECURSION_LIMIT,
-                        },
-                    ),
-                    timeout=TASK_TIMEOUT_SECONDS,
-                )
-                result_code, content = _extract_result_from_messages(
-                    result.get("messages", [])
-                )
-            except asyncio.TimeoutError:
-                result_code = ERROR
-                content = f"任务执行超时（>{TASK_TIMEOUT_SECONDS}s）"
-            except Exception as e:  # noqa: BLE001
-                result_code = ERROR
-                content = str(e)
+        # 将 request metadata 注入请求级 ContextVar，供深层工具读取（如 user_id）
+        meta_token = set_request_metadata(context.metadata)
+        try:
+            if self._service.agent is None:
+                result_code, content = ERROR, "Agent 尚未初始化完成，请稍后重试"
+            else:
+                try:
+                    result = await asyncio.wait_for(
+                        self._service.agent.ainvoke(
+                            {
+                                "messages": [
+                                    {"role": "user", "content": query}
+                                ]
+                            },
+                            config={
+                                "configurable": {"thread_id": task_id},
+                                "recursion_limit": RECURSION_LIMIT,
+                            },
+                        ),
+                        timeout=TASK_TIMEOUT_SECONDS,
+                    )
+                    result_code, content = _extract_result_from_messages(
+                        result.get("messages", [])
+                    )
+                except asyncio.TimeoutError:
+                    result_code = ERROR
+                    content = f"任务执行超时（>{TASK_TIMEOUT_SECONDS}s）"
+                except Exception as e:  # noqa: BLE001
+                    result_code = ERROR
+                    content = str(e)
 
-        message = new_message(
-            parts=[
-                new_text_part(content),
-                new_data_part({"code": result_code, "content": content}),
-            ],
-            context_id=context_id,
-            task_id=task_id,
-            role=Role.ROLE_AGENT,
-        )
-        await event_queue.enqueue_event(message)
+            message = new_message(
+                parts=[
+                    new_text_part(content),
+                    new_data_part({"code": result_code, "content": content}),
+                ],
+                context_id=context_id,
+                task_id=task_id,
+                role=Role.ROLE_AGENT,
+            )
+            await event_queue.enqueue_event(message)
+        finally:
+            reset_request_metadata(meta_token)
 
     async def cancel(
         self, context: RequestContext, event_queue: EventQueue

@@ -112,6 +112,7 @@ async def _process_session(db_config: dict, session: dict) -> int:
     thread_id = session["thread_id"]
     turn_count = session["turn_count"]
     existing_context = session.get("context_summary") or ""
+    existing_count = session.get("context_summary_count") or 0
 
     max_summarize_index = turn_count - 4
     if max_summarize_index < 0:
@@ -153,7 +154,14 @@ async def _process_session(db_config: dict, session: dict) -> int:
                     )
                 processed += 1
 
-        if processed > 0 or not existing_context:
+        summarized_count = sum(
+            1
+            for t in all_turns
+            if t["turn_index"] <= max_summarize_index
+            and (t.get("summary") or "").strip()
+        )
+
+        if summarized_count > existing_count or not existing_context:
             summarized_turns = [
                 t for t in all_turns if t["turn_index"] <= max_summarize_index
             ]
@@ -164,7 +172,7 @@ async def _process_session(db_config: dict, session: dict) -> int:
                 turns_text_parts.append(f"用户: {t['user_query']}\n助手: {result}")
             all_turns_text = "\n\n".join(turns_text_parts)
 
-            if existing_context and processed > 0:
+            if existing_context:
                 new_context = await _merge_context_summary(existing_context, all_turns_text)
             else:
                 new_context = await _generate_context_summary(all_turns_text)
@@ -172,8 +180,8 @@ async def _process_session(db_config: dict, session: dict) -> int:
             if new_context:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE sessions SET context_summary = %s WHERE id = %s",
-                        (new_context, session_id),
+                        "UPDATE sessions SET context_summary = %s, context_summary_count = %s WHERE id = %s",
+                        (new_context, summarized_count, session_id),
                     )
 
     return processed
@@ -189,7 +197,7 @@ async def _run_loop() -> None:
             with mysql.connector.connect(**db_config) as conn:
                 with conn.cursor(dictionary=True) as cur:
                     cur.execute(
-                        "SELECT id, thread_id, turn_count, context_summary"
+                        "SELECT id, thread_id, turn_count, context_summary, context_summary_count"
                         " FROM sessions WHERE turn_count > 3"
                     )
                     sessions = cur.fetchall()

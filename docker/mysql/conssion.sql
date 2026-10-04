@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title           VARCHAR(200) NOT NULL DEFAULT '',
     status          ENUM('active', 'done') NOT NULL DEFAULT 'active',
     context_summary TEXT        NULL,
+    context_summary_count INT   NOT NULL DEFAULT 0,
     turn_count      INT         NOT NULL DEFAULT 0,
     created_at      DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

@@ -13,6 +13,8 @@ from a2a.helpers.proto_helpers import (
     new_text_message,
 )
 from a2a.types import Role, SendMessageRequest
+from google.protobuf import struct_pb2
+from google.protobuf.json_format import ParseDict
 from langchain_core.tools import tool
 
 from shared.agent_result import ERROR, make_result, parse_result
@@ -29,7 +31,12 @@ SUBAGENT_URLS = {
 TIMEOUT_SECONDS = 120
 
 
-async def _call_subagent(service_key: str, query: str, tool_name: str) -> str:
+async def _call_subagent(
+    service_key: str,
+    query: str,
+    tool_name: str,
+    metadata: dict | None = None,
+) -> str:
     """通过官方 a2a-sdk 调用子智能体，始终返回标准信封 JSON 字符串。"""
     base_url = SUBAGENT_URLS[service_key]
 
@@ -48,9 +55,12 @@ async def _call_subagent(service_key: str, query: str, tool_name: str) -> str:
             resolver_http_kwargs={"timeout": TIMEOUT_SECONDS},
         )
 
-        request = SendMessageRequest(
-            message=new_text_message(query, role=Role.ROLE_USER)
-        )
+        request_kwargs: dict = {
+            "message": new_text_message(query, role=Role.ROLE_USER)
+        }
+        if metadata:
+            request_kwargs["metadata"] = ParseDict(metadata, struct_pb2.Struct())
+        request = SendMessageRequest(**request_kwargs)
 
         async for stream_response in client.send_message(
             request,
@@ -138,6 +148,10 @@ async def call_vector_search(query: str, collection: str = "default") -> str:
     return await _call_subagent("vector_search", query, "A2A-向量检索助手")
 
 
-async def call_memory_agent(message: str) -> str:
-    """向长期记忆 Agent 发送记忆提取请求（由 orchestrator 结尾 fire-and-forget 调用）。"""
-    return await _call_subagent("memory_agent", message, "A2A-记忆助手")
+async def call_memory_agent(message: str, metadata: dict | None = None) -> str:
+    """向长期记忆 Agent 发送记忆提取请求（由 orchestrator 结尾 fire-and-forget 调用）。
+
+    metadata 携带 user_id / source_session_id 等溯源字段，经 A2A request metadata
+    传递，服务端注入工具调用，避免 LLM 转写。
+    """
+    return await _call_subagent("memory_agent", message, "A2A-记忆助手", metadata=metadata)
