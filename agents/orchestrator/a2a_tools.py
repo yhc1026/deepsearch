@@ -17,8 +17,11 @@ from google.protobuf import struct_pb2
 from google.protobuf.json_format import ParseDict
 from langchain_core.tools import tool
 
-from shared.agent_result import ERROR, make_result, parse_result
+from shared.agent_result import ERROR, make_result, parse_result, parse_score
 from shared.monitor import monitor
+from shared.token_usage import add_usage
+
+from agents.orchestrator.context import get_session_context
 
 SUBAGENT_URLS = {
     "network_search": "http://localhost:8001",
@@ -26,6 +29,7 @@ SUBAGENT_URLS = {
     # "ragflow": "http://localhost:8003",  # TODO: 取消注释以启用 RAGFlow
     "vector_search": "http://localhost:8004",
     "memory_agent": "http://localhost:8005",
+    "document_writer": "http://localhost:8006",
 }
 
 TIMEOUT_SECONDS = 120
@@ -72,11 +76,16 @@ async def _call_subagent(
             parts = stream_response.message.parts
             data_parts = get_data_parts(parts)
             if data_parts:
-                code, content = parse_result(data_parts[0])
+                data = data_parts[0]
+                code, content = parse_result(data)
+                score = parse_score(data)
+                if isinstance(data, dict):
+                    add_usage(data.get("usage"))
             else:
                 text = "\n".join(get_text_parts(parts))
                 code, content = parse_result(text)
-            return make_result(code, content)
+                score = parse_score(text)
+            return make_result(code, content, score=score)
 
         return make_result(ERROR, "子智能体返回了空结果")
 
@@ -146,6 +155,24 @@ async def call_vector_search(query: str, collection: str = "default") -> str:
     适用场景：企业内部非结构化文档的知识检索。
     """
     return await _call_subagent("vector_search", query, "A2A-向量检索助手")
+
+
+@tool
+async def call_document_writer(query: str) -> str:
+    """调用文档撰写助手，把整理好的内容生成为 Markdown 或 PDF 文档。
+
+    重要：传入的 query 必须自包含地描述文档撰写需求，并把上游检索到的资料完整附上：
+    - 明确文档标题、格式（Markdown / PDF）和章节结构要求
+    - 把各上游步骤的原始数据一并带入（可用 {{step_X}} 引用），供撰写助手组织正文
+    - 文档撰写助手会自行生成正文并写入文件，无需主智能体再拼装 Markdown
+
+    适用场景：报告、周报、纪要、分析文档等最终交付物的生成与格式转换。
+    """
+    session_dir = get_session_context()
+    metadata = {"session_dir": session_dir} if session_dir else None
+    return await _call_subagent(
+        "document_writer", query, "A2A-文档撰写助手", metadata=metadata
+    )
 
 
 async def call_memory_agent(message: str, metadata: dict | None = None) -> str:

@@ -1,7 +1,7 @@
 """
 Markdown 文件生成工具
 
-供主智能体把最终整理后的内容写入当前会话工作目录。工具会把模型传入的
+供文档撰写智能体把最终整理后的内容写入当前会话工作目录。工具会把模型传入的
 filename/path 交给 resolve_path 统一解析，避免模型直接操作真实绝对路径。
 """
 
@@ -14,9 +14,10 @@ except ImportError:
     from typing_extensions import Annotated
 from langchain_core.tools import tool
 
-from agents.orchestrator.context import get_session_context
+from shared.request_context import get_request_metadata
 from shared.monitor import monitor
-from agents.orchestrator.path_utils import resolve_path
+from shared.path_utils import resolve_path
+from agents.document_writer.settings import DEFAULT_OUTPUT_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,8 @@ def generate_markdown(
     if not filename.endswith(".md"):
         filename += ".md"
 
-    # session_dir 由 run_deep_agent 写入 ContextVar，保证文件写入当前会话工作目录
-    session_dir = get_session_context()
+    # session_dir 由 orchestrator 经 A2A request metadata 注入，保证文件写入当前会话工作目录
+    session_dir = get_request_metadata().get("session_dir") or str(DEFAULT_OUTPUT_DIR)
     logger.debug(f"当前会话目录: {session_dir}")
 
     # 先把模型传入的 path/filename 合成一个逻辑路径，再交给 resolve_path 做统一清洗

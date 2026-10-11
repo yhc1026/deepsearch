@@ -17,6 +17,7 @@ import type {
   OutputFile,
   SessionSummary,
   SocketMessage,
+  TokenUsage,
   UploadedItem,
 } from "../types";
 import type { ChatTurn } from "../components/ConversationThread";
@@ -26,6 +27,18 @@ const MAX_EVENTS = 120;
 function extractString(data: Record<string, unknown>, key: string): string | null {
   const value = data[key];
   return typeof value === "string" ? value : null;
+}
+
+function extractNumber(data: Record<string, unknown>, key: string): number | null {
+  const value = data[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 export function useDeepAgentSession(userId: number | null = null) {
@@ -40,6 +53,7 @@ export function useDeepAgentSession(userId: number | null = null) {
   const [files, setFiles] = useState<OutputFile[]>([]);
   const [sessionPath, setSessionPath] = useState("");
   const [result, setResult] = useState("");
+  const [usage, setUsage] = useState<TokenUsage | null>(null);
   const [lastError, setLastError] = useState("");
   const [lastPongAt, setLastPongAt] = useState("");
   const [isRunning, setIsRunning] = useState(false);
@@ -69,6 +83,7 @@ export function useDeepAgentSession(userId: number | null = null) {
           isRunning: false,
           result: turn.assistant_result || "",
           timestamp: turn.created_at,
+          usage: null,
         })
       );
 
@@ -77,6 +92,7 @@ export function useDeepAgentSession(userId: number | null = null) {
       setThreadId(targetThreadId);
       setEvents([]);
       setResult("");
+      setUsage(null);
       setLastError("");
       setFiles([]);
       setSessionPath("");
@@ -119,6 +135,7 @@ export function useDeepAgentSession(userId: number | null = null) {
     setFiles([]);
     setSessionPath("");
     setResult("");
+    setUsage(null);
     setLastError("");
     setUploadedItems([]);
     uploadedNameSetRef.current.clear();
@@ -199,6 +216,19 @@ export function useDeepAgentSession(userId: number | null = null) {
             setResult(finalResult || payload.message);
             setIsRunning(false);
             setIsCancelling(false);
+          }
+
+          if (payload.event === "usage") {
+            const inputTokens = extractNumber(payload.data, "input_tokens");
+            const outputTokens = extractNumber(payload.data, "output_tokens");
+            const totalTokens = extractNumber(payload.data, "total_tokens");
+            if (totalTokens !== null) {
+              setUsage({
+                input_tokens: inputTokens ?? 0,
+                output_tokens: outputTokens ?? 0,
+                total_tokens: totalTokens,
+              });
+            }
           }
 
           if (payload.event === "task_cancelled") {
@@ -296,6 +326,7 @@ export function useDeepAgentSession(userId: number | null = null) {
       setIsCancelling(false);
       setEvents([]);
       setResult("");
+      setUsage(null);
       setLastError("");
       try {
         const response = await startTask(cleanQuery, threadId, userId);
@@ -411,6 +442,7 @@ export function useDeepAgentSession(userId: number | null = null) {
     submitTask,
     threadId,
     uploadFiles,
-    uploadedItems
+    uploadedItems,
+    usage
   };
 }

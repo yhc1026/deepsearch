@@ -8,7 +8,7 @@ import {
 import { Button, Tooltip } from "antd";
 import { getDownloadUrl } from "../lib/api";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import type { MonitorMessage, OutputFile } from "../types";
+import type { MonitorMessage, OutputFile, TokenUsage } from "../types";
 
 export interface ChatTurn {
   id: string;
@@ -18,6 +18,7 @@ export interface ChatTurn {
   isRunning: boolean;
   result: string;
   timestamp: string;
+  usage: TokenUsage | null;
 }
 
 interface ConversationThreadProps {
@@ -124,7 +125,8 @@ function AssistantMessage({
   files,
   isRunning,
   result,
-}: Pick<ChatTurn, "files" | "isRunning" | "result">) {
+  usage,
+}: Pick<ChatTurn, "files" | "isRunning" | "result" | "usage">) {
   return (
     <article className="chat-message chat-message--assistant">
       <div className="message-avatar">AI</div>
@@ -144,6 +146,17 @@ function AssistantMessage({
             ) : (
               "任务完成后会在这里显示最终回复。"
             )}
+          </div>
+        )}
+
+        {usage && (
+          <div className="message-usage">
+            <span className="message-usage-total">
+              本次响应消耗 <strong>{usage.total_tokens}</strong> tokens
+            </span>
+            <span className="message-usage-detail">
+              输入 {usage.input_tokens} · 输出 {usage.output_tokens}
+            </span>
           </div>
         )}
 
@@ -196,6 +209,7 @@ export function ConversationThread({
             files={turn.files}
             isRunning={turn.isRunning}
             result={turn.result}
+            usage={turn.usage}
           />
         </div>
       ))}

@@ -1,12 +1,14 @@
 """
 DeepSearch Agents 一键启动脚本 (单机多进程版)
 
-启动 5 个独立 Agent 服务:
+启动 6 个独立 Agent 服务:
   - port 8000: 主智能体 (Orchestrator + Query Rewriter)
   - port 8001: 网络搜索智能体 (Tavily)
   - port 8002: 数据库查询智能体 (MySQL)
   - port 8003: RAGFlow 智能体 (RAGFlow SDK)
   - port 8004: 向量检索智能体 (ChromaDB + OpenAI Embedding)
+  - port 8005: 长期记忆智能体 (ChromaDB long_term_memory)
+  - port 8006: 文档撰写智能体 (Markdown 生成 + PDF 转换)
 
 使用方式:
   uv run python start_services.py              # 生产模式，无热重载
@@ -41,11 +43,13 @@ if shutil.which("uv") is None:
 SERVICES: List[Tuple[str, str, int | None]] = [
     ("主智能体",          "agents.orchestrator.server:app",                       8000),
     ("网络搜索智能体",    "agents.network_search.server:app",              8001),
+    # MCP Server 是数据库查询智能体的依赖，必须先于它启动，避免连接竞态
+    ("MySQL MCP Server",  "agents.database_query.mcp_server:http_app", 8100),
     ("数据库查询智能体",  "agents.database_query.server:app",              8002),
     # ("RAGFlow智能体",     "agents.ragflow_search.server:app",                     8003),  # TODO: 取消注释以启用 RAGFlow
     ("向量检索智能体",    "agents.vector_search.server:app",               8004),
     ("长期记忆智能体",    "agents.memory_agent.server:app",              8005),
-    ("MySQL MCP Server",  "agents.database_query.mcp_server:http_app", 8100),
+    ("文档撰写智能体",    "agents.document_writer.server:app",            8006),
     ("异步摘要智能体",     "agents.backend.summary_agent.server:main",    None),
 ]
 

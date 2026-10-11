@@ -18,3 +18,7 @@ model = init_chat_model(
     api_key=os.getenv("API_KEY"),
     base_url=os.getenv("BASE_URL"),
 )
+
+# 自定义 base_url 时 stream_usage 默认不会开启，显式打开，
+# 使 astream 的最后一个 chunk 携带 usage_metadata，供 token 统计读取。
+model.stream_usage = True

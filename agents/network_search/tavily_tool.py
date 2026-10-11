@@ -23,6 +23,18 @@ load_dotenv()
 # TavilyClient 是实际访问搜索服务的客户端；模块级复用可避免每次工具调用重复初始化
 tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
+# 单条结果正文/原文的最大字符数：截断避免冗长网页内容撑爆下游 LLM 上下文
+_MAX_CONTENT_CHARS = 300
+
+
+def _truncate(text: str, max_len: int = _MAX_CONTENT_CHARS) -> str:
+    """按字符截断文本，超长时以省略号结尾。"""
+    if not text:
+        return text
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "…"
+
 
 # @tool 会把函数签名和 docstring 暴露给 DeepAgents，模型据此决定是否调用以及如何填参
 @tool
@@ -66,6 +78,13 @@ def internet_search(
         max_results=max_results,
         include_raw_content=include_raw_content,
     )
+
+    # 截断每条结果的正文与原文，避免冗长内容撑爆下游 LLM 上下文
+    for item in result.get("results", []):
+        if item.get("content"):
+            item["content"] = _truncate(item["content"])
+        if item.get("raw_content"):
+            item["raw_content"] = _truncate(item["raw_content"])
 
     # 输出检索摘要
     results_count = len(result.get("results", []))

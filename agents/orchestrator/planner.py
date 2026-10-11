@@ -178,7 +178,6 @@ class Planner:
         step_ids = {s.id for s in plan.steps}
         available_tools = {t.name for t in self.tools}
         info_tools = {t.name for t in self.tools if t.category == "info"}
-        file_tools = {t.name for t in self.tools if t.category == "file"}
 
         # 空计划是合法的——表示 LLM 判断不需要调用任何工具，直接口头回复
         if not plan.steps:
@@ -203,14 +202,15 @@ class Planner:
             # 3. 循环依赖检测
             self._check_cycle(plan, step)
 
-        # 4. 规则校验：文件生成工具必须在最后，且依赖所有信息获取步骤
+        # 4. 规则校验：文档撰写步骤必须在最后，且依赖所有信息获取步骤
         info_step_ids = [s.id for s in plan.steps if s.tool in info_tools]
-        file_steps = [s for s in plan.steps if s.tool in file_tools]
-        for fs in file_steps:
+
+        # call_document_writer 汇总所有信息获取步骤的结果，必须依赖它们
+        for dw in (s for s in plan.steps if s.tool == "call_document_writer"):
             for info_id in info_step_ids:
-                if info_id not in fs.depends_on:
+                if info_id not in dw.depends_on:
                     raise PlanValidationError(
-                        f"步骤 {fs.id}（文件生成）必须依赖所有信息获取步骤，"
+                        f"步骤 {dw.id}（撰写文档）必须依赖所有信息获取步骤，"
                         f"缺少对 {info_id} 的依赖"
                     )
 
@@ -301,20 +301,13 @@ def _default_tools() -> list[ToolInfo]:
             ),
         ),
         ToolInfo(
-            name="generate_markdown",
+            name="call_document_writer",
             category="file",
             description=(
-                "生成 Markdown 文档。参数 content: 文档内容（markdown 格式），"
-                "filename: 文件名（含 .md 后缀），path: 保存路径。"
-                "该工具必须放在所有信息获取步骤之后。"
-            ),
-        ),
-        ToolInfo(
-            name="convert_md_to_pdf",
-            category="file",
-            description=(
-                "将 Markdown 文件转换为 PDF。依赖 generate_markdown 先生成 md 文件。"
-                "参数 md_filename: 源 md 文件名，pdf_filename: 目标 pdf 文件名。"
+                "调用文档撰写助手，把已检索到的内容整理成正式文档（Markdown 或 PDF）。"
+                "参数 query: 自包含的撰写请求，需包含文档标题、输出格式（Markdown/PDF）"
+                "和章节要求，并用 {{step_X}} 引用所有上游信息获取步骤的结果。"
+                "该步骤必须放在所有信息获取步骤之后，并依赖它们。"
             ),
         ),
     ]
@@ -354,9 +347,8 @@ _DEFAULT_PLANNING_SYSTEM_PROMPT = """你是一个资深的任务规划专家。�
    - 在 B 的 query 中用 `{{step_X}}` 引用 A 的完整结果，或用 `{{step_X.field_name}}` 引用 A 结果中的特定字段
 
 3. **顺序约束**：
-   - 信息获取工具（call_database_query / call_network_search / call_vector_search）必须在文件生成之前
-   - 文件生成工具（generate_markdown）必须放在所有信息获取步骤之后，且 depends_on 必须包含所有信息获取步骤
-   - convert_md_to_pdf 必须依赖 generate_markdown 的步骤
+   - 信息获取工具（call_database_query / call_network_search / call_vector_search）必须在文档撰写之前
+   - 文档撰写工具（call_document_writer）必须放在所有信息获取步骤之后，且 depends_on 必须包含所有信息获取步骤
 
 4. **最大化并行**：能在同一批并行执行的步骤就不要串行。
 
@@ -394,9 +386,9 @@ _DEFAULT_EXAMPLES = [
                 },
                 {
                     "id": "step_2",
-                    "tool": "generate_markdown",
-                    "description": "根据库存数据生成报告",
-                    "query": "根据以下阿莫西林库存数据生成一份库存分析报告，包含：库存总览、批次明细、效期预警、仓库分布。\n\n库存数据：{{step_1}}",
+                    "tool": "call_document_writer",
+                    "description": "根据库存数据生成库存分析报告",
+                    "query": "根据以下阿莫西林库存数据生成一份库存分析报告（Markdown 格式，不少于1000字），包含：库存总览、批次明细、效期预警、仓库分布。\n\n库存数据：{{step_1}}",
                     "depends_on": ["step_1"],
                 },
             ],
@@ -430,17 +422,10 @@ _DEFAULT_EXAMPLES = [
                 },
                 {
                     "id": "step_3",
-                    "tool": "generate_markdown",
-                    "description": "汇总市场分析和库存数据，生成采购建议报告",
-                    "query": "基于以下数据生成一份阿莫西林采购建议报告（不少于1000字），包含：1.市场供需分析 2.当前库存状况 3.销售趋势 4.采购建议（含建议采购量和时间节点） 5.风险提示。\n\n市场分析：{{step_1}}\n\n库存与销售数据：{{step_2}}",
+                    "tool": "call_document_writer",
+                    "description": "汇总市场分析和库存数据，生成采购建议 PDF 报告",
+                    "query": "基于以下数据生成一份阿莫西林采购建议报告（PDF 格式，不少于1000字），包含：1.市场供需分析 2.当前库存状况 3.销售趋势 4.采购建议（含建议采购量和时间节点） 5.风险提示。\n\n市场分析：{{step_1}}\n\n库存与销售数据：{{step_2}}",
                     "depends_on": ["step_1", "step_2"],
-                },
-                {
-                    "id": "step_4",
-                    "tool": "convert_md_to_pdf",
-                    "description": "将 Markdown 报告转为 PDF",
-                    "query": "将 step_3 生成的报告转换为 PDF",
-                    "depends_on": ["step_3"],
                 },
             ],
         },

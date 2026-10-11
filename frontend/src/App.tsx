@@ -37,7 +37,8 @@ function createTurn(content: string): ChatTurn {
     files: [],
     isRunning: true,
     result: "",
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    usage: null
   };
 }
 
@@ -57,7 +58,12 @@ export default function App() {
 
       const latestTurn = previous[previous.length - 1];
       // 没有活跃任务也没有新结果时，保留已加载的历史轮次不动
-      if (!latestTurn.isRunning && !session.isRunning && !session.result) {
+      if (
+        !latestTurn.isRunning &&
+        !session.isRunning &&
+        !session.result &&
+        !session.usage
+      ) {
         return previous;
       }
 
@@ -67,11 +73,12 @@ export default function App() {
         files: session.files.length > 0 ? session.files : latestTurn.files,
         isRunning: session.isRunning,
         result: session.result || latestTurn.result,
+        usage: session.usage || latestTurn.usage,
       };
 
       return [...previous.slice(0, -1), nextLatestTurn];
     });
-  }, [session.events, session.files, session.isRunning, session.result]);
+  }, [session.events, session.files, session.isRunning, session.result, session.usage]);
 
   async function handleSubmit() {
     const cleanQuery = query.trim();

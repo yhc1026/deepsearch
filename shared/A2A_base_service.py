@@ -45,12 +45,15 @@ from a2a.utils.constants import PROTOCOL_VERSION_1_0, TransportProtocol
 
 from shared.llm import model
 from shared.logger import setup_logging
-from shared.agent_result import ERROR, HIT, MISS, parse_result
+from shared.agent_result import ERROR, HIT, MISS, extract_envelope_code, parse_result, parse_score
 from shared.request_context import reset_request_metadata, set_request_metadata
+from shared.token_usage import add_usage, begin_request, get_usage, reset_request
 
 # 略小于客户端 A2A timeout(120s)，避免服务端无限跑、客户端已放弃
 TASK_TIMEOUT_SECONDS = 110
-RECURSION_LIMIT = 22
+RECURSION_LIMIT = 15
+# 信封返回 ERROR 时的最大尝试次数
+MAX_ATTEMPTS = 2
 
 
 class _A2AAgentExecutor(AgentExecutor):
@@ -72,39 +75,50 @@ class _A2AAgentExecutor(AgentExecutor):
 
         # 将 request metadata 注入请求级 ContextVar，供深层工具读取（如 user_id）
         meta_token = set_request_metadata(context.metadata)
+        begin_request()
+        score: Optional[float] = None
         try:
             if self._service.agent is None:
                 result_code, content = ERROR, "Agent 尚未初始化完成，请稍后重试"
             else:
-                try:
-                    result = await asyncio.wait_for(
-                        self._service.agent.ainvoke(
-                            {
-                                "messages": [
-                                    {"role": "user", "content": query}
-                                ]
-                            },
-                            config={
-                                "configurable": {"thread_id": task_id},
-                                "recursion_limit": RECURSION_LIMIT,
-                            },
-                        ),
-                        timeout=TASK_TIMEOUT_SECONDS,
-                    )
-                    result_code, content = _extract_result_from_messages(
-                        result.get("messages", [])
-                    )
-                except asyncio.TimeoutError:
-                    result_code = ERROR
-                    content = f"任务执行超时（>{TASK_TIMEOUT_SECONDS}s）"
-                except Exception as e:  # noqa: BLE001
-                    result_code = ERROR
-                    content = str(e)
+                result_code, content, score = ERROR, "Agent 未执行", None
+                for attempt in range(1, MAX_ATTEMPTS + 1):
+                    try:
+                        result = await asyncio.wait_for(
+                            self._service.agent.ainvoke(
+                                {
+                                    "messages": [
+                                        {"role": "user", "content": query}
+                                    ]
+                                },
+                                config={
+                                    "configurable": {"thread_id": f"{task_id}#{attempt}"},
+                                    "recursion_limit": RECURSION_LIMIT,
+                                },
+                            ),
+                            timeout=TASK_TIMEOUT_SECONDS,
+                        )
+                        messages = result.get("messages", [])
+                        # 汇总 DeepAgent 循环里所有 LLM 调用（工具内部 add_usage 已计入累计器）
+                        for msg in messages:
+                            if getattr(msg, "type", None) == "ai":
+                                add_usage(getattr(msg, "usage_metadata", None))
+                        result_code, content, score = _extract_result_from_messages(messages)
+                    except asyncio.TimeoutError:
+                        result_code = ERROR
+                        content = f"任务执行超时（>{TASK_TIMEOUT_SECONDS}s）"
+                    except Exception as e:  # noqa: BLE001
+                        result_code = ERROR
+                        content = str(e)
 
+                    if result_code != ERROR or attempt >= MAX_ATTEMPTS:
+                        break
+
+            usage = get_usage()
             message = new_message(
                 parts=[
                     new_text_part(content),
-                    new_data_part({"code": result_code, "content": content}),
+                    new_data_part({"code": result_code, "content": content, "usage": usage, "score": score}),
                 ],
                 context_id=context_id,
                 task_id=task_id,
@@ -113,6 +127,7 @@ class _A2AAgentExecutor(AgentExecutor):
             await event_queue.enqueue_event(message)
         finally:
             reset_request_metadata(meta_token)
+            reset_request()
 
     async def cancel(
         self, context: RequestContext, event_queue: EventQueue
@@ -277,27 +292,36 @@ class A2AAgentService:
         return app
 
 
-def _extract_result_from_messages(messages: list) -> tuple[str, str]:
-    """从 Agent 消息链提取 (result_code, content)。
+def _extract_result_from_messages(messages: list) -> tuple[str, str, Optional[float]]:
+    """从 Agent 消息链提取 (result_code, content, score)。
 
-    优先级：
-    1. 最后一次工具返回的标准信封（代码侧产出，最可靠）
-    2. 最终 AI 消息中的信封
-    3. 最终 AI 纯文本 → 默认 HIT
+    优先级（子 agent 自判 HIT/MISS）：
+    1. 最终 AI 消息中显式给出的信封 code（LLM 层语义判定，权威）
+    2. 最后一次工具返回的显式信封 code（工具层确定性判定，如向量 rerank）
+    3. 两者都没有正确信封 → 默认 ERROR（A2A 层兜底，绝不默认 HIT）
+    score 取自工具信封的 score 字段（如向量 rerank 置信度），无则 None。
     """
     last_tool_code: Optional[str] = None
-    tool_contents: list[str] = []
+    last_tool_score: Optional[float] = None
+    tool_bodies: list[str] = []
 
     for msg in messages:
-        msg_type = getattr(msg, "type", None)
+        if getattr(msg, "type", None) != "tool":
+            continue
         content = getattr(msg, "content", None)
         if not content:
             continue
-        if msg_type == "tool":
-            code, body = parse_result(content)
-            last_tool_code = code
-            if body:
-                tool_contents.append(body)
+        # 只认显式信封；纯文本工具输出（如 DB 的 CSV）不当作 HIT
+        code = extract_envelope_code(content)
+        if code is None:
+            continue
+        last_tool_code = code
+        _, body = parse_result(content)
+        if body:
+            tool_bodies.append(body)
+        score = parse_score(content)
+        if score is not None:
+            last_tool_score = score
 
     final_ai = ""
     for msg in reversed(messages):
@@ -305,33 +329,23 @@ def _extract_result_from_messages(messages: list) -> tuple[str, str]:
             final_ai = str(msg.content)
             break
 
+    # 1. 子 agent 显式判定的 code 优先（MySQL/网络搜索靠 LLM 自判 HIT/MISS）
     if final_ai:
-        ai_code, ai_content = parse_result(final_ai)
-    else:
-        ai_code, ai_content = None, ""
+        ai_code = extract_envelope_code(final_ai)
+        if ai_code is not None:
+            _, ai_content = parse_result(final_ai)
+            content = ai_content or final_ai
+            return ai_code, content, last_tool_score
 
+    # 2. 回退到工具信封 code（向量/ragflow 的确定性判定）
     if last_tool_code is not None:
-        if ai_content:
-            content = ai_content
-        elif tool_contents:
-            content = "\n\n".join(tool_contents)
-        else:
-            content = final_ai
+        content = final_ai or ("\n\n".join(tool_bodies))
         if not content:
             content = "Agent 未返回有效结果"
             if last_tool_code == HIT:
-                return MISS, content
-        return last_tool_code, content
+                return MISS, content, last_tool_score
+        return last_tool_code, content, last_tool_score
 
-    if ai_code:
-        if ai_content:
-            message_content = ai_content
-        elif final_ai:
-            message_content = final_ai
-        else:
-            message_content = "Agent 未返回有效结果"
-        return ai_code, message_content
-
-    if final_ai:
-        return HIT, final_ai
-    return MISS, "Agent 未返回有效结果"
+    # 3. 无正确格式信封 → A2A 层兜底 ERROR
+    content = final_ai or "Agent 未返回正确格式的结果信封"
+    return ERROR, content, last_tool_score

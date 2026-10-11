@@ -23,6 +23,7 @@ from langchain_core.tools import tool
 from shared.llm import model
 from shared.agent_result import ERROR, HIT, MISS, make_result
 from shared.monitor import monitor
+from shared.token_usage import add_usage
 
 from .ingestion import ingest_text
 from .rerank import rerank
@@ -30,6 +31,7 @@ from .settings import (
     HYBRID_TOP_K,
     QUERY_VARIANTS,
     RERANK_CANDIDATE_K,
+    RERANK_THRESHOLD,
     RERANK_TOP_K,
 )
 from .vector_store import vector_store
@@ -58,6 +60,7 @@ def _generate_query_variants(query: str, n: int = 3) -> list[str]:
             SystemMessage(content=_MULTI_QUERY_SYSTEM),
             HumanMessage(content=prompt),
         ])
+        add_usage(resp.usage_metadata)
         content = str(resp.content) if resp.content else "[]"
         # 去掉可能的 markdown 围栏
         content = content.strip()
@@ -173,15 +176,29 @@ def search_knowledge_base(
         # Step 4: rerank 精排（原始 query 与候选 chunk 逐对比对）
         candidate_texts = [c["text"] for c in candidates]
         rerank_scores: dict[int, float] = {}
+        use_rerank = False
         try:
             for r in rerank(query, candidate_texts):
                 rerank_scores[int(r.get("index", -1))] = float(r.get("relevance_score", 0.0))
+            use_rerank = True
             print(f"\033[37m[VectorSearch] 精排完成: {len(rerank_scores)}/{len(candidates)} 条\033[0m")
         except Exception as e:
             print(f"\033[33m[VectorSearch] 精排失败，降级为纯粗排: {e}\033[0m")
 
-        # Step 5: 粗排/精排分数各自 min-max 归一化后按 50:50 加权，取 top
+        # Step 5: 粗排/精排分数各自 min-max 归一化后按 50:50 加权
         final = _fuse_scores(candidates, rerank_scores)
+
+        # Step 5.5: 相似度阈值门控——rerank score 低于阈值则拒答（MISS）。
+        # 用绝对 rerank score 而非融合后的 final_score（后者经 min-max 归一化，丢失绝对量纲）。
+        # 仅 rerank 成功时启用；降级为纯粗排时无绝对相似度可判，跳过门控。
+        if use_rerank:
+            final = [c for c in final if c.get("rerank_score", 0.0) >= RERANK_THRESHOLD]
+            if not final:
+                return make_result(
+                    MISS,
+                    f"知识库「{collection}」中未找到与问题足够相关的内容"
+                    f"（最高相似度低于阈值 {RERANK_THRESHOLD}）",
+                )
         final = final[:RERANK_TOP_K]
 
         # Step 6: 格式化输出
@@ -203,8 +220,10 @@ def search_knowledge_base(
             + "\n\n---\n\n".join(items)
         )
 
+        top_score = max(c.get("rerank_score", 0.0) for c in final)
+
         print(f"\033[37m[VectorSearch] 检索完成: 返回 {len(final)} 条结果\033[0m")
-        return make_result(HIT, result_text)
+        return make_result(HIT, result_text, score=top_score)
 
     except Exception as e:
         return make_result(ERROR, f"向量检索异常: {str(e)}")

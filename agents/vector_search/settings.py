@@ -31,6 +31,8 @@ CHUNK_OVERLAP = int(os.getenv("VECTOR_CHUNK_OVERLAP", "150"))
 RERANK_CANDIDATE_K = int(os.getenv("VECTOR_RERANK_CANDIDATE_K", "20"))
 # 精排融合后最终写入 prompt 的结果数
 RERANK_TOP_K = int(os.getenv("VECTOR_RERANK_TOP_K", "3"))
+# 拒答阈值：rerank relevance_score 低于该值视为不相关，整条检索返回 MISS
+RERANK_THRESHOLD = float(os.getenv("VECTOR_RERANK_THRESHOLD", "0.3"))
 
 # Rerank 服务配置（硅基流动 BGE-Reranker-v2-m3）
 RERANK_API_KEY = os.getenv("RERANK_API_KEY", "")

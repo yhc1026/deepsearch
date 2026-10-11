@@ -1,8 +1,8 @@
 """
 Markdown 转 PDF 工具
 
-供主智能体把已经生成的 Markdown 文档转换为 PDF。Tool 层只负责解析当前
-会话目录中的输入/输出路径，真正的版式转换交给 app.utils.word_converter。
+供文档撰写智能体把已经生成的 Markdown 文档转换为 PDF。Tool 层只负责解析当前
+会话目录中的输入/输出路径，真正的版式转换交给 agents.document_writer.word_converter。
 """
 
 import logging
@@ -15,10 +15,11 @@ except ImportError:
 
 from langchain_core.tools import tool
 
-from agents.orchestrator.context import get_session_context
+from shared.request_context import get_request_metadata
 from shared.monitor import monitor
-from agents.orchestrator.path_utils import resolve_path
-from agents.orchestrator.word_converter import convert_md_to_pdf as convert_md_to_pdf_via_word
+from shared.path_utils import resolve_path
+from agents.document_writer.word_converter import convert_md_to_pdf as convert_md_to_pdf_via_word
+from agents.document_writer.settings import DEFAULT_OUTPUT_DIR
 
 
 @tool
@@ -39,7 +40,7 @@ def convert_md_to_pdf(
 
     try:
         # 输入路径必须先落到当前会话目录，避免模型传入任意系统路径
-        session_dir = get_session_context()
+        session_dir = get_request_metadata().get("session_dir") or str(DEFAULT_OUTPUT_DIR)
         md_path = Path(md_filename).with_suffix(".md")
         md_abs_path = Path(resolve_path(str(md_path), session_dir))
 

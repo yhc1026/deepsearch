@@ -35,4 +35,5 @@ sub_agents_content = {
     # "ragflow": load_agent_prompts("ragflow_search"),  # TODO: 取消注释以启用 RAGFlow
     "vector_search": load_agent_prompts("vector_search"),
     "memory": load_agent_prompts("memory_agent"),
+    "document_writer": load_agent_prompts("document_writer"),
 }

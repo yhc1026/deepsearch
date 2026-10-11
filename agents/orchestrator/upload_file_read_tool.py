@@ -13,7 +13,7 @@ from langchain_core.tools import tool
 
 from agents.orchestrator.context import get_session_context
 from shared.monitor import monitor
-from agents.orchestrator.path_utils import resolve_path
+from shared.path_utils import resolve_path
 
 # 文档解析依赖按需导入：缺少某类依赖时，只影响对应文件格式，不影响工具整体注册
 try:

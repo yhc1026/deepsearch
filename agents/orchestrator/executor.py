@@ -24,10 +24,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 logger = logging.getLogger(__name__)
 
 from shared.llm import model
+from shared.token_usage import add_usage
 from agents.orchestrator.planner import Plan, PlanStep
-from agents.orchestrator.context import get_session_context
 from shared.monitor import monitor
-from shared.agent_result import ERROR, HIT, needs_fallback, parse_result
+from shared.agent_result import ERROR, HIT, needs_fallback, parse_result, parse_score
 
 # =============================================================================
 # 工具注册表
@@ -35,12 +35,11 @@ from shared.agent_result import ERROR, HIT, needs_fallback, parse_result
 
 from agents.orchestrator.a2a_tools import (
     call_database_query,
+    call_document_writer,
     call_network_search,
     # call_ragflow_query,  # TODO: 取消注释以启用 RAGFlow
     call_vector_search,
 )
-from agents.orchestrator.markdown_tools import generate_markdown
-from agents.orchestrator.pdf_tools import convert_md_to_pdf
 from agents.orchestrator.upload_file_read_tool import read_file_content
 
 # 工具名 → LangChain BaseTool 实例
@@ -49,13 +48,15 @@ _TOOL_REGISTRY: dict[str, Any] = {
     "call_database_query": call_database_query,
     # "call_ragflow_query": call_ragflow_query,  # TODO: 取消注释以启用 RAGFlow
     "call_vector_search": call_vector_search,
+    "call_document_writer": call_document_writer,
     "read_file_content": read_file_content,
-    "generate_markdown": generate_markdown,
-    "convert_md_to_pdf": convert_md_to_pdf,
 }
 
 # A2A 信息获取工具（query → {"query": query}）
 _A2A_TOOLS = {"call_network_search", "call_database_query", "call_vector_search"}  # call_ragflow_query 已禁用
+
+# A2A 文档交付工具：同样接收 {"query": query}，但 query 需携带完整上游数据，不做压缩重写
+_DELIVERY_TOOLS = {"call_document_writer"}
 
 
 def _extract_template_step_ids(template: str) -> list[str]:
@@ -156,7 +157,7 @@ class DAGExecutor:
         plan: Plan,
         resume_state: dict[str, Any] | None = None,
         on_batch_done: Callable[[dict[str, str], dict[str, str], int], Awaitable[None]] | None = None,
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], dict[str, float | None]]:
         """执行整个计划，返回 {step_id: result_string}。
 
         resume_state: 断点恢复的初始状态 {"results", "result_codes", "batch_index"}，
@@ -165,12 +166,13 @@ class DAGExecutor:
                       用于将执行进度落 checkpoint（异步，会被 await）。
         """
         if not plan.steps:
-            return {}
+            return {}, {}
 
         batches = self._topological_batches(plan)
 
         results: dict[str, str] = {}
         result_codes: dict[str, str] = {}
+        result_scores: dict[str, float | None] = {}
         start_batch = 0
         if resume_state:
             results = dict(resume_state.get("results") or {})
@@ -243,6 +245,7 @@ class DAGExecutor:
                     code, content = parse_result(raw)
                     results[step.id] = content
                     result_codes[step.id] = code
+                    result_scores[step.id] = parse_score(raw)
                     logger.info(
                         f"步骤 {step.id} 完成 code={code} ({len(content)} 字符)"
                     )
@@ -255,7 +258,7 @@ class DAGExecutor:
             f"计划执行完成，共 {len(plan.steps)} 步",
             {"completed_steps": len(results), "result_codes": result_codes},
         )
-        return results
+        return results, result_scores
 
     # ------------------------------------------------------------------
     # 拓扑排序
@@ -310,15 +313,12 @@ class DAGExecutor:
             raise ExecutionError(f"未知工具: {step.tool}")
 
         # 如果模板填充改变了 query（说明引用了上游结果），用 LLM 重写为精确查询
+        # 注意：仅信息获取工具需要重写；文档撰写工具需保留完整上游数据，不做压缩
         has_template_refs = "{{" in step.query
         if has_template_refs and step.tool in _A2A_TOOLS:
             query = await self._rewrite_query(step.description, step.query, raw_query, results)
         else:
             query = raw_query
-
-        # generate_markdown 需要额外一步 LLM 合成：把"指令+数据"转为正式内容
-        if step.tool == "generate_markdown":
-            query = await self._synthesize_content(query)
 
         params = self._build_tool_params(step.tool, query)
 
@@ -346,81 +346,14 @@ class DAGExecutor:
         不同工具有不同的参数签名，但 Planner 产出的 query 是统一字符串格式。
         这里做适配转换。
         """
-        if tool_name in _A2A_TOOLS:
+        if tool_name in _A2A_TOOLS or tool_name in _DELIVERY_TOOLS:
             return {"query": query}
 
         if tool_name == "read_file_content":
             return {"filename": query.strip(), "instruction": "提取关键内容"}
 
-        if tool_name == "generate_markdown":
-            session_dir = get_session_context()
-            # 从 query 前 50 个字符推断文件名
-            safe_title = self._safe_filename(query)
-            filename = f"{safe_title}.md"
-            return {
-                "content": query,
-                "filename": filename,
-                "path": session_dir,
-            }
-
-        if tool_name == "convert_md_to_pdf":
-            # query 应该是源 md 文件名
-            md_name = query.strip().replace("\n", " ")
-            if not md_name.endswith(".md"):
-                md_name += ".md"
-            pdf_name = md_name.replace(".md", ".pdf")
-            return {
-                "md_filename": md_name,
-                "pdf_filename": pdf_name,
-            }
-
         # fallback
         return {"query": query}
-
-    @staticmethod
-    def _safe_filename(text: str, max_len: int = 40) -> str:
-        """从文本中提取安全的文件名片段。"""
-        # 取第一行，去掉特殊字符
-        first_line = text.strip().split("\n")[0]
-        safe = "".join(c for c in first_line if c.isalnum()
-                       or c in " _-").strip().replace(" ", "_")
-        if len(safe) > max_len:
-            safe = safe[:max_len]
-        if safe:
-            return safe
-        else:
-            return "output"
-
-    # ------------------------------------------------------------------
-    # LLM 内容合成（generate_markdown 专用）
-    # ------------------------------------------------------------------
-
-    async def _synthesize_content(self, instruction: str) -> str:
-        """将「指令+数据」组合转为正式的文档内容。
-
-        Plan 中的 generate_markdown 步骤，其 query 包含两部分：
-        1. 文档生成的指令（如"生成一份XXX报告，包含章节A/B/C"）
-        2. 通过 {{step_X}} 模板注入的上游数据
-
-        填充后的文本是"指令+数据"的混合体，这里调用 LLM 将其转为
-        结构化的正式 Markdown 文档内容。
-        """
-        system_prompt = (
-            "你是一个专业的研究报告撰写助手。"
-            "请根据用户的指令和提供的数据，生成一份结构完整的 Markdown 文档。"
-            "要求：不少于 1000 字，章节结构清晰，数据引用准确，有明确结论。"
-            "直接输出 Markdown 正文，不要输出任何解释性前言或后记。"
-        )
-
-        response = await model.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=instruction),
-        ])
-
-        if response.content:
-            return str(response.content)
-        else:
-            return instruction
 
     # ------------------------------------------------------------------
     # LLM Query 重写（动态依赖解析）
@@ -466,6 +399,7 @@ class DAGExecutor:
             SystemMessage(content="你是查询重写专家。只输出改写后的 query，不要输出任何其他内容。"),
             HumanMessage(content=prompt),
         ])
+        add_usage(response.usage_metadata)
 
         if response.content:
             rewritten = str(response.content).strip()

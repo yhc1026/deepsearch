@@ -42,14 +42,25 @@ async def _ensure_session():
 
         streamable_http_client = _get_mcp_client()
         _exit_stack = AsyncExitStack()
-        transports = await _exit_stack.enter_async_context(
-            streamable_http_client(MCP_SERVER_URL)
-        )
-        read_stream, write_stream = transports[0], transports[1]
-        _persistent_session = await _exit_stack.enter_async_context(
-            ClientSession(read_stream, write_stream)
-        )
-        await _persistent_session.initialize()
+        try:
+            transports = await _exit_stack.enter_async_context(
+                streamable_http_client(MCP_SERVER_URL)
+            )
+            read_stream, write_stream = transports[0], transports[1]
+            _persistent_session = await _exit_stack.enter_async_context(
+                ClientSession(read_stream, write_stream)
+            )
+            await _persistent_session.initialize()
+        except Exception:
+            # 连接失败时清理半初始化状态，避免残留脏 session/exit_stack 影响后续重连
+            _persistent_session = None
+            if _exit_stack is not None:
+                try:
+                    await _exit_stack.aclose()
+                except Exception:
+                    pass
+                _exit_stack = None
+            raise
         logger.debug("MCP 持久 session 已建立")
         return _persistent_session
 

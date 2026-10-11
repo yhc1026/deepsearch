@@ -43,6 +43,30 @@ service = A2AAgentService(
 # 后台刷新间隔（秒），可通过环境变量调整
 REFRESH_INTERVAL = int(os.getenv("MCP_TOOL_REFRESH_INTERVAL", "30"))
 
+# 首次加载 MCP 工具的重试配置：容忍 MCP Server 尚未就绪的启动竞态
+MCP_LOAD_RETRIES = int(os.getenv("MCP_LOAD_RETRIES", "5"))
+MCP_LOAD_RETRY_DELAY = float(os.getenv("MCP_LOAD_RETRY_DELAY", "2"))
+
+
+async def _load_mcp_tools_with_retry() -> list:
+    """带重试地加载 MCP 工具，容忍 MCP Server 启动慢于本服务的情况。"""
+    from agents.database_query.mcp_client import get_mcp_tools
+
+    last_err: Exception | None = None
+    for attempt in range(1, MCP_LOAD_RETRIES + 1):
+        try:
+            return await get_mcp_tools(force_refresh=True)
+        except Exception as e:
+            last_err = e
+            if attempt < MCP_LOAD_RETRIES:
+                logger.debug(
+                    f"MCP 工具加载失败（第 {attempt}/{MCP_LOAD_RETRIES} 次），"
+                    f"{MCP_LOAD_RETRY_DELAY}s 后重试: {e}"
+                )
+                await asyncio.sleep(MCP_LOAD_RETRY_DELAY)
+    assert last_err is not None
+    raise last_err
+
 
 def _build_tool_instruction(mcp_tools: list, fallback_tools: list) -> str:
     """构建注入 system_prompt 的工具使用说明"""
@@ -97,9 +121,7 @@ async def db_lifespan(app):
 
     # 首次加载 MCP 工具
     try:
-        from agents.database_query.mcp_client import get_mcp_tools
-
-        mcp_tools = await get_mcp_tools(force_refresh=True)
+        mcp_tools = await _load_mcp_tools_with_retry()
         all_tools = list(mcp_tools) + _fallback_tools
 
         instruction = _build_tool_instruction(mcp_tools, _fallback_tools)
